@@ -1,1 +1,1 @@
-export { autoTrustWorkspace, launchAgent } from "../agent-launcher.js";
+export { autoAcceptStartupPrompts, launchAgent } from "../agent-launcher.js";

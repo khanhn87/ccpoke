@@ -466,33 +466,52 @@ Promise.all([...])
 
 ## Logging Standards
 
-**Library:** Built-in or structured logger
+**Library:** Pino v10 with pino-pretty for formatted console output
+
+**Configuration:**
+- **File Transport:** `/tmp/ccpoke-debug.log` (async, append mode)
+- **Auto-rotation:** Truncates file when size exceeds 2MB
+- **Console Transport:** pino-pretty with colors and system timestamps (HH:mm:ss)
+- **Control:** `LOG_FILE_ONLY=1` env var disables console output; `LOG_LEVEL` env var controls level (default: info)
 
 **Levels:**
-- **debug** — Development-only, verbose details
+- **debug** — Development-only, verbose details (file only by default)
 - **info** — Informational, normal operation
 - **warn** — Warning, recoverable issue
 - **error** — Error, operation failed
 
-**Pattern:**
+**Usage:**
 ```typescript
+import { log, logDebug, logWarn, logError, flushLogger } from './utils/log.js';
+
+log('Session started');  // info level
+logDebug('Detailed trace');  // debug level
+logWarn('Recoverable issue');  // warn level
+logError('Operation failed', error);  // error level with error context
+
+// On shutdown: flush pending logs before exit
+flushLogger(() => process.exit(0));
+```
+
+**Pattern (if using logger directly):**
+```typescript
+// Only when importing pino directly (rare)
 logger.info('Session started', {
   sessionId: session.id,
   project: session.project,
   duration: elapsed,
 });
 
-logger.error('Hook verification failed', {
-  error: error.message,
-  secret: '[redacted]',  // Never log secrets
-  endpoint: req.url,
-});
+logger.error({ err: error }, 'Hook verification failed');
 ```
 
 **Never log:**
 - API tokens, secrets, credentials
 - Personal user data (full Telegram IDs in detail)
 - Sensitive file paths
+
+**Graceful Shutdown:**
+Always call `flushLogger(callback)` in signal/error handlers before exiting. This ensures buffered logs are written to disk (critical for debugging production issues).
 
 ---
 

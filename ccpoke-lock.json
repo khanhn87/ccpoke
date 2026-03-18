@@ -1,0 +1,102 @@
+{
+  "claude-code-notification.cmd": {
+    "hash": "sha256:6221c77b46baad949bf82de67632421dc1b49136e4b3bdaf1a270126ba059a72",
+    "version": "1.7.10"
+  },
+  "claude-code-notification.sh": {
+    "hash": "sha256:016e8b15d394ca180e4e876aebfd25fcd68d889d1d7e8cc4c4a6974bc39f807e",
+    "version": "1.7.4"
+  },
+  "claude-code-permission-request.cmd": {
+    "hash": "sha256:0fcff8aa387e976320fd23c5300249607278384ed1ccbfb91d99cc2a615523c7",
+    "version": "1.7.10"
+  },
+  "claude-code-permission-request.sh": {
+    "hash": "sha256:e9bd171e2e4394112757cc9b02713373b4e628baf71b813700ace34ee06528e9",
+    "version": "1.7.4"
+  },
+  "claude-code-pretooluse.cmd": {
+    "hash": "sha256:4c0da1676afc5a97c24fbe4492357b9aa23e14fe5ffc127cc01f8f1917f2d9c6",
+    "version": "1.7.10"
+  },
+  "claude-code-pretooluse.sh": {
+    "hash": "sha256:811b3ed6f121b2464057293dd81e1946f1696259756dc1f043881b4c3e3ec163",
+    "version": "1.7.4"
+  },
+  "claude-code-session-start.cmd": {
+    "hash": "sha256:4934ae3d4a6a466cbfc5ecb7545f8dd5f5ab863b391fad5a340902ee2a9f0880",
+    "version": "1.7.10"
+  },
+  "claude-code-session-start.sh": {
+    "hash": "sha256:1e8211b1c4867ce55ee1bb81a7c9001e4256032fd0b5fe082fae5dc407d44011",
+    "version": "1.7.10"
+  },
+  "claude-code-stop.cmd": {
+    "hash": "sha256:1487bcbf37842b832f1df313a080902c1c0095791f3f664e9a8d9665b58c5be7",
+    "version": "1.7.10"
+  },
+  "claude-code-stop.sh": {
+    "hash": "sha256:031d7181517915b0a363c074c78d0aec5eca0816e58b273811899f33cb39354a",
+    "version": "1.7.4"
+  },
+  "codex-notify.cmd": {
+    "hash": "sha256:f89363181f6852aee5be1b6d43d4ff9cabea8b55cac9ebb9c6506af98185df3b",
+    "version": "1.7.10"
+  },
+  "codex-notify.sh": {
+    "hash": "sha256:86a15daaa63e4953828cdf01f1c6a92efba1b9e3354d0a35a75c9c29f58de51f",
+    "version": "1.7.4"
+  },
+  "cursor-stop.cmd": {
+    "hash": "sha256:4d3fb1710dc3b9edb9de7a040c52231e02f5f3f204ad4ddba512bc0828d2f5a6",
+    "version": "1.7.10"
+  },
+  "cursor-stop.sh": {
+    "hash": "sha256:4969d0270a55272debc77af239ce9cbc57cb065a8612ca08f22c9e7bcdfe6e5d",
+    "version": "1.7.4"
+  },
+  "gemini-notification.cmd": {
+    "hash": "sha256:ab04bb42e3528f8fae2efa713091af9aa312f2e4a4d13be9f9a50b47845f69bb",
+    "version": "1.7.10"
+  },
+  "gemini-notification.sh": {
+    "hash": "sha256:52855f50aa12d1b47ab51a02c743876d2ad7347bcc77123e5bcb16390894fd43",
+    "version": "1.7.4"
+  },
+  "gemini-session-start.cmd": {
+    "hash": "sha256:100b21d87bec84a1b6a967859f625b41e2ad712d8699d53964754e46d4a69105",
+    "version": "1.7.10"
+  },
+  "gemini-session-start.sh": {
+    "hash": "sha256:1445a2cd5dee986c9f4d47accfa7f080f4c6565d8ea4f5d46f653fdb252cd719",
+    "version": "1.7.4"
+  },
+  "gemini-stop.cmd": {
+    "hash": "sha256:51a1713c2f23174946929893161ac0564dc0e921d2a4349ad13f97e8ed77bec5",
+    "version": "1.7.10"
+  },
+  "gemini-stop.sh": {
+    "hash": "sha256:4be634fcfac3068f39ad137e922167158ecab04554b5fcfda7132f28bf8b1207",
+    "version": "1.7.4"
+  },
+  "lib/common.cmd": {
+    "hash": "sha256:0430f5a42e747cfe9f6d12f8f552c4806ee6a6bfcc57d98e82551c6ccd602a48",
+    "version": "1.7.10"
+  },
+  "lib/common.sh": {
+    "hash": "sha256:738c487fd04d5aabec1a11b35b950dd42434d3b698a298a5a85a15d2ffcbf180",
+    "version": "1.7.10"
+  },
+  "lib/json-merge.cjs": {
+    "hash": "sha256:2aca148d358f9500daee42adcbcad5d7d55a689097816727c1113867593e1e36",
+    "version": "1.7.4"
+  },
+  "lib/json-read.cjs": {
+    "hash": "sha256:f25e0bb5658f933969e7c3a8352115f76355a02350da416405ad1040d8ed03f3",
+    "version": "1.7.4"
+  },
+  "opencode-notify.js": {
+    "hash": "sha256:c29b032b1372e2332d0f132e620706a801a8689b45d90fb99388c39a60b93dea",
+    "version": "1.7.10"
+  }
+}

@@ -1,159 +1,115 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 
-import { ApiRoute, isWindows } from "../../utils/constants.js";
-import { getPackageVersion, paths } from "../../utils/paths.js";
-import { AgentName } from "../types.js";
+import { HookScriptCopier } from "../../hooks/hook-script-copier.js";
+import { readJsonFile, writeJsonFile } from "../../utils/atomic-file.js";
+import { CCPOKE_MARKER, isWindows } from "../../utils/constants.js";
+import { paths, toPosixPath } from "../../utils/paths.js";
+import type { AgentInstaller, IntegrityResult } from "../types.js";
 
-const VERSION_HEADER_PATTERN = /^#\s*ccpoke-version:\s*(\S+)/;
-const VERSION_HEADER_PATTERN_WIN = /^@REM\s+ccpoke-version:\s*(\S+)/;
-
-interface CursorStopHook {
+interface StopHook {
   command: string;
   timeout: number;
 }
 
-interface CursorHooksConfig {
+interface HooksConfig {
   version?: number;
   hooks?: {
-    stop?: CursorStopHook[];
+    stop?: StopHook[];
     [key: string]: unknown;
   };
   [key: string]: unknown;
 }
 
-function hasCcpokeHook(stopHooks: CursorStopHook[]): boolean {
+function hasCcpokeHook(stopHooks: StopHook[]): boolean {
   return stopHooks.some(
-    (entry) => typeof entry.command === "string" && entry.command.includes("ccpoke")
+    (entry) => typeof entry.command === "string" && entry.command.includes(CCPOKE_MARKER)
   );
 }
 
-function hasExactHookPath(stopHooks: CursorStopHook[]): boolean {
-  return stopHooks.some(
-    (entry) => typeof entry.command === "string" && entry.command === paths.cursorHookScript
-  );
+function hasExactHookPath(stopHooks: StopHook[]): boolean {
+  const expected = toPosixPath(paths.cursorHookScript);
+  return stopHooks.some((entry) => typeof entry.command === "string" && entry.command === expected);
 }
 
-function readScriptVersion(scriptPath: string): string | null {
-  try {
-    const content = readFileSync(scriptPath, "utf-8");
-    const lines = content.split("\n");
-    for (const line of lines.slice(0, 3)) {
-      const match = line.match(VERSION_HEADER_PATTERN) ?? line.match(VERSION_HEADER_PATTERN_WIN);
-      if (match) return match[1] ?? null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-export class CursorInstaller {
-  static isInstalled(): boolean {
+export const cursorInstaller = {
+  isInstalled(): boolean {
     try {
       if (!existsSync(paths.cursorHooksJson)) return false;
-
-      const config = CursorInstaller.readConfig();
+      const config = readJsonFile<HooksConfig>(paths.cursorHooksJson, { version: 1, hooks: {} });
       return hasCcpokeHook(config.hooks?.stop ?? []);
     } catch {
       return false;
     }
-  }
+  },
 
-  static install(hookPort: number, hookSecret: string): void {
-    mkdirSync(paths.cursorDir, { recursive: true });
-
-    const config = CursorInstaller.readConfig();
-
-    if (!config.hooks) config.hooks = {};
-
-    const existing = config.hooks.stop ?? [];
-    const filtered = existing.filter(
-      (entry) => !(typeof entry.command === "string" && entry.command.includes("ccpoke"))
-    );
-
-    filtered.push({
-      command: paths.cursorHookScript,
-      timeout: 10,
-    });
-
-    config.hooks.stop = filtered;
-    if (!config.version) config.version = 1;
-
-    writeFileSync(paths.cursorHooksJson, JSON.stringify(config, null, 2));
-    CursorInstaller.writeScript(hookPort, hookSecret);
-  }
-
-  static verifyIntegrity(): { complete: boolean; missing: string[] } {
+  verifyIntegrity(): IntegrityResult {
     const missing: string[] = [];
 
     try {
-      const config = CursorInstaller.readConfig();
+      const config = readJsonFile<HooksConfig>(paths.cursorHooksJson, { version: 1, hooks: {} });
       const stopHooks = config.hooks?.stop ?? [];
-      if (!hasCcpokeHook(stopHooks)) missing.push("Stop hook in hooks.json");
-      else if (!hasExactHookPath(stopHooks)) missing.push("wrong hook script path in hooks.json");
+      if (!hasCcpokeHook(stopHooks)) {
+        missing.push("Stop hook in hooks.json");
+      } else if (!hasExactHookPath(stopHooks)) {
+        missing.push("wrong hook script path in hooks.json");
+      }
     } catch {
       missing.push("hooks.json");
     }
 
     if (!existsSync(paths.cursorHookScript)) {
       missing.push("stop script file");
-    } else if (readScriptVersion(paths.cursorHookScript) !== getPackageVersion()) {
-      missing.push("outdated stop script");
+    } else {
+      const ext = isWindows() ? ".cmd" : ".sh";
+      if (HookScriptCopier.needsCopy(`cursor-stop${ext}`, paths.cursorHookScript)) {
+        missing.push("outdated stop script");
+      }
     }
 
     return { complete: missing.length === 0, missing };
-  }
+  },
 
-  static uninstall(): void {
-    CursorInstaller.removeFromHooksJson();
-    CursorInstaller.removeScript();
-  }
+  install(): void {
+    cursorInstaller.uninstall();
 
-  private static writeScript(hookPort: number, hookSecret: string): void {
-    mkdirSync(paths.hooksDir, { recursive: true });
+    mkdirSync(paths.cursorDir, { recursive: true });
 
-    const agentParam = `?agent=${AgentName.Cursor}`;
-    const version = getPackageVersion();
-    const script = isWindows()
-      ? `@REM ccpoke-version: ${version}\n@echo off\ncurl -s -X POST http://localhost:${hookPort}${ApiRoute.HookStop}${agentParam} -H "Content-Type: application/json" -H "X-CCPoke-Secret: ${hookSecret}" --data-binary @- > nul 2>&1\n`
-      : `#!/bin/bash
-# ccpoke-version: ${version}
-INPUT=$(cat | tr -d '\\n\\r')
-[ -z "$INPUT" ] && exit 0
-TMUX_TARGET=""
-if [ -n "$TMUX_PANE" ]; then
-  TMUX_TARGET=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")
-elif [ -n "$TMUX" ]; then
-  TMUX_TARGET=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")
-fi
-if [ -n "$TMUX_TARGET" ] && echo "$TMUX_TARGET" | grep -qE '^[a-zA-Z0-9_.:/@ -]+$'; then
-  INPUT=$(echo "$INPUT" | sed 's/}$/,"tmux_target":"'"$TMUX_TARGET"'"}/')
-fi
-echo "$INPUT" | curl -s -X POST "http://localhost:${hookPort}${ApiRoute.HookStop}${agentParam}" \\
-  -H "Content-Type: application/json" \\
-  -H "X-CCPoke-Secret: ${hookSecret}" \\
-  --data-binary @- > /dev/null 2>&1 || true
-`;
-
-    writeFileSync(paths.cursorHookScript, script, { mode: isWindows() ? 0o644 : 0o700 });
-  }
-
-  private static removeScript(): void {
-    try {
-      unlinkSync(paths.cursorHookScript);
-    } catch {
-      // script may not exist
+    const config = readJsonFile<HooksConfig>(paths.cursorHooksJson, { version: 1, hooks: {} });
+    if (!config.hooks) {
+      config.hooks = {};
     }
-  }
 
-  private static removeFromHooksJson(): void {
-    if (!existsSync(paths.cursorHooksJson)) return;
+    config.hooks.stop = [
+      ...(config.hooks.stop ?? []),
+      {
+        command: toPosixPath(paths.cursorHookScript),
+        timeout: 10,
+      },
+    ];
 
-    const config = CursorInstaller.readConfig();
-    if (!config.hooks?.stop) return;
+    if (!config.version) {
+      config.version = 1;
+    }
+
+    writeJsonFile(paths.cursorHooksJson, config);
+
+    HookScriptCopier.copyLib();
+    const ext = isWindows() ? ".cmd" : ".sh";
+    HookScriptCopier.copy(`cursor-stop${ext}`, paths.cursorHookScript);
+  },
+
+  uninstall(): void {
+    if (!existsSync(paths.cursorHooksJson)) {
+      return;
+    }
+
+    const config = readJsonFile<HooksConfig>(paths.cursorHooksJson, { version: 1, hooks: {} });
+    if (!config.hooks?.stop) {
+      return;
+    }
 
     const filtered = config.hooks.stop.filter(
-      (entry) => !(typeof entry.command === "string" && entry.command.includes("ccpoke"))
+      (entry) => !(typeof entry.command === "string" && entry.command.includes(CCPOKE_MARKER))
     );
 
     if (filtered.length === 0) {
@@ -166,17 +122,8 @@ echo "$INPUT" | curl -s -X POST "http://localhost:${hookPort}${ApiRoute.HookStop
       delete config.hooks;
     }
 
-    writeFileSync(paths.cursorHooksJson, JSON.stringify(config, null, 2));
-  }
+    writeJsonFile(paths.cursorHooksJson, config);
 
-  private static readConfig(): CursorHooksConfig {
-    try {
-      return JSON.parse(readFileSync(paths.cursorHooksJson, "utf-8"));
-    } catch (err: unknown) {
-      const isFileNotFound =
-        err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT";
-      if (isFileNotFound) return { version: 1, hooks: {} };
-      throw err;
-    }
-  }
-}
+    HookScriptCopier.remove(paths.cursorHookScript);
+  },
+} satisfies AgentInstaller;

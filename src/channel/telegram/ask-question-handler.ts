@@ -2,19 +2,22 @@ import type TelegramBot from "node-telegram-bot-api";
 
 import type { AskUserQuestionEvent, AskUserQuestionItem } from "../../agent/agent-handler.js";
 import { t } from "../../i18n/index.js";
+import type { PaneRegistry } from "../../tmux/pane-registry.js";
 import type { TmuxBridge } from "../../tmux/tmux-bridge.js";
-import { log, logDebug, logError } from "../../utils/log.js";
+import { logger } from "../../utils/log.js";
+import { buildSessionLabel } from "../session-label.js";
 import {
   buildMultiSelectKeyboard,
   buildSingleSelectKeyboard,
 } from "./ask-question-keyboard-builder.js";
 import { AskQuestionTuiInjector, type InjectionAnswer } from "./ask-question-tui-injector.js";
 import { escapeMarkdownV2 } from "./escape-markdown.js";
+import { padMaxWidth } from "./telegram-sender.js";
 
 interface PendingQuestion {
   pendingId: number;
   sessionId: string;
-  tmuxTarget: string;
+  paneId: string;
   agent?: string;
   questions: AskUserQuestionItem[];
   currentIndex: number;
@@ -39,20 +42,21 @@ export class AskQuestionHandler {
   constructor(
     private bot: TelegramBot,
     private chatId: () => number | null,
-    tmuxBridge: TmuxBridge
+    tmuxBridge: TmuxBridge,
+    private paneRegistry: PaneRegistry | null
   ) {
     this.injector = new AskQuestionTuiInjector(tmuxBridge);
   }
 
   async forwardQuestion(event: AskUserQuestionEvent): Promise<void> {
     const chat = this.chatId();
-    if (!chat || !event.tmuxTarget || event.questions.length === 0) return;
+    if (!chat || !event.paneId || event.questions.length === 0) return;
 
-    log(
-      `[AskQ] sessionId=${event.sessionId} tmuxTarget=${event.tmuxTarget} questions=${event.questions.length}`
+    logger.info(
+      `[AskQ] sessionId=${event.sessionId} paneId=${event.paneId} questions=${event.questions.length}`
     );
 
-    if (this.pending.size >= MAX_PENDING && !this.pending.has(event.sessionId)) {
+    if (this.pending.size >= MAX_PENDING && !this.pending.has(event.paneId)) {
       const oldest = [...this.pending.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
       if (oldest) this.clearPending(oldest[0]);
     }
@@ -61,7 +65,7 @@ export class AskQuestionHandler {
     const pq: PendingQuestion = {
       pendingId,
       sessionId: event.sessionId,
-      tmuxTarget: event.tmuxTarget,
+      paneId: event.paneId,
       agent: event.agent,
       questions: event.questions,
       currentIndex: 0,
@@ -71,11 +75,11 @@ export class AskQuestionHandler {
       createdAt: Date.now(),
     };
 
-    log(
-      `[AskQ:store] pendingId=${pendingId} sessionId=${event.sessionId} tmuxTarget=${event.tmuxTarget} pending.keys=[${[...this.pending.keys()].join(",")}]`
+    logger.info(
+      `[AskQ:store] pendingId=${pendingId} paneId=${event.paneId} pending.keys=[${[...this.pending.keys()].join(",")}]`
     );
 
-    this.setPending(event.sessionId, pq);
+    this.setPending(event.paneId, pq);
     await this.sendQuestion(chat, pq, 0);
   }
 
@@ -83,7 +87,7 @@ export class AskQuestionHandler {
     if (!query.data || !query.message) return;
 
     if (this.processedCallbacks.has(query.id)) {
-      logDebug(`[AskQ:callback] DEDUP skip id=${query.id}`);
+      logger.debug(`[AskQ:callback] DEDUP skip id=${query.id}`);
       try {
         await this.bot.answerCallbackQuery(query.id);
       } catch {
@@ -97,14 +101,14 @@ export class AskQuestionHandler {
       this.processedCallbacks.delete(first);
     }
 
-    logDebug(`[AskQ:callback] data=${query.data}`);
+    logger.debug(`[AskQ:callback] data=${query.data}`);
 
     const msgId = query.message.message_id;
     const prev = this.callbackLocks.get(msgId) ?? Promise.resolve();
     const current = prev
       .then(() => this.processCallback(query))
       .catch((err) => {
-        logError("[AskQ:callback] error", err);
+        logger.error({ err }, "[AskQ:callback] error");
       });
     this.callbackLocks.set(msgId, current);
     await current;
@@ -141,12 +145,16 @@ export class AskQuestionHandler {
     const q = pq.questions[qIdx];
     if (!q) return;
 
+    const sessionLine = this.buildSessionLine(pq.paneId);
     const header = formatQuestionHeader(pq, qIdx);
     const hint = q.multiSelect ? t("askQuestion.multiSelectHint") : t("askQuestion.selectHint");
     const optionList = formatOptionList(q);
-    const text = optionList
-      ? `${header}\n\n${escapeMarkdownV2(q.question)}\n\n${optionList}\n\n_${escapeMarkdownV2(hint)}_`
-      : `${header}\n\n${escapeMarkdownV2(q.question)}\n\n_${escapeMarkdownV2(hint)}_`;
+    const headerBlock = sessionLine ? `${sessionLine}\n${header}` : header;
+    const text = padMaxWidth(
+      optionList
+        ? `${headerBlock}\n\n${escapeMarkdownV2(q.question)}\n\n${optionList}\n\n_${escapeMarkdownV2(hint)}_`
+        : `${headerBlock}\n\n${escapeMarkdownV2(q.question)}\n\n_${escapeMarkdownV2(hint)}_`
+    );
 
     const keyboard = q.multiSelect
       ? buildMultiSelectKeyboard(pq.pendingId, qIdx, q, new Set())
@@ -172,12 +180,12 @@ export class AskQuestionHandler {
 
     const pq = this.findPendingByNumericId(pendingId);
     if (!pq) {
-      logDebug(`[AskQ:single] pendingId=${pendingId} NOT FOUND`);
+      logger.debug(`[AskQ:single] pendingId=${pendingId} NOT FOUND`);
       await this.bot.answerCallbackQuery(query.id, { text: t("askQuestion.sessionExpired") });
       return;
     }
-    logDebug(
-      `[AskQ:single] pendingId=${pendingId} → sessionId=${pq.sessionId} tmuxTarget=${pq.tmuxTarget} opt=${optPart}`
+    logger.debug(
+      `[AskQ:single] pendingId=${pendingId} → sessionId=${pq.sessionId} paneId=${pq.paneId} opt=${optPart}`
     );
 
     const optIdx = parseInt(optPart, 10);
@@ -191,7 +199,9 @@ export class AskQuestionHandler {
     if (msgId) {
       await this.bot
         .editMessageText(
-          `${formatQuestionHeader(pq, qIdx)}\n\n${escapeMarkdownV2(t("askQuestion.selected", { option: q.options[optIdx]!.label }))}`,
+          padMaxWidth(
+            `${formatQuestionHeader(pq, qIdx)}\n\n${escapeMarkdownV2(t("askQuestion.selected", { option: q.options[optIdx]!.label }))}`
+          ),
           { chat_id: query.message!.chat.id, message_id: msgId, parse_mode: "MarkdownV2" }
         )
         .catch(() => {});
@@ -211,12 +221,12 @@ export class AskQuestionHandler {
 
     const pq = this.findPendingByNumericId(pendingId);
     if (!pq) {
-      logDebug(`[AskQ:multi] pendingId=${pendingId} NOT FOUND`);
+      logger.debug(`[AskQ:multi] pendingId=${pendingId} NOT FOUND`);
       await this.bot.answerCallbackQuery(query.id, { text: t("askQuestion.sessionExpired") });
       return;
     }
-    logDebug(
-      `[AskQ:multi] pendingId=${pendingId} → sessionId=${pq.sessionId} tmuxTarget=${pq.tmuxTarget} opt=${optPart}`
+    logger.debug(
+      `[AskQ:multi] pendingId=${pendingId} → sessionId=${pq.sessionId} paneId=${pq.paneId} opt=${optPart}`
     );
 
     const q = pq.questions[qIdx];
@@ -271,7 +281,9 @@ export class AskQuestionHandler {
     if (msgId) {
       await this.bot
         .editMessageText(
-          `${formatQuestionHeader(pq, qIdx)}\n\n${escapeMarkdownV2(t("askQuestion.selectedMultiple", { options: labels.join(", ") }))}`,
+          padMaxWidth(
+            `${formatQuestionHeader(pq, qIdx)}\n\n${escapeMarkdownV2(t("askQuestion.selectedMultiple", { options: labels.join(", ") }))}`
+          ),
           { chat_id: query.message!.chat.id, message_id: msgId, parse_mode: "MarkdownV2" }
         )
         .catch(() => {});
@@ -286,25 +298,27 @@ export class AskQuestionHandler {
     const answer = pq.answers.get(qIdx);
     if (!q || !answer) return;
 
-    logDebug(
-      `[AskQ:inject] tmuxTarget=${pq.tmuxTarget} sessionId=${pq.sessionId} qIdx=${qIdx} indices=${answer.indices}`
+    logger.debug(
+      `[AskQ:inject] paneId=${pq.paneId} sessionId=${pq.sessionId} qIdx=${qIdx} indices=${answer.indices}`
     );
 
     try {
-      const ready = await this.injector.waitForTui(pq.tmuxTarget, 5000);
-      logDebug(`[AskQ:inject] TUI ready=${ready} for target=${pq.tmuxTarget}`);
+      const ready = await this.injector.waitForTui(pq.paneId, 5000);
+      logger.debug(`[AskQ:inject] TUI ready=${ready} for target=${pq.paneId}`);
       if (!ready) throw new Error("TUI not ready");
 
       if (q.multiSelect) {
-        await this.injector.injectMultiSelect(pq.tmuxTarget, q, answer, pq.agent);
+        await this.injector.injectMultiSelect(pq.paneId, q, answer, pq.agent);
       } else {
-        await this.injector.injectSingleSelect(pq.tmuxTarget, q, answer, pq.agent);
+        await this.injector.injectSingleSelect(pq.paneId, q, answer, pq.agent);
       }
     } catch (err) {
-      logError(t("askQuestion.injectionFailed"), err);
+      logger.error({ err }, t("askQuestion.injectionFailed"));
       const chat = this.chatId();
       if (chat) {
-        await this.bot.sendMessage(chat, t("askQuestion.injectionFailed")).catch(() => {});
+        await this.bot
+          .sendMessage(chat, padMaxWidth(t("askQuestion.injectionFailed")))
+          .catch(() => {});
       }
     }
   }
@@ -312,47 +326,54 @@ export class AskQuestionHandler {
   private async advanceToNext(chatId: number, pq: PendingQuestion): Promise<void> {
     pq.currentIndex++;
     if (pq.currentIndex >= pq.questions.length) {
-      logDebug(
-        `[AskQ:submit] all ${pq.questions.length} questions answered, submitting via Enter on target=${pq.tmuxTarget}`
+      logger.debug(
+        `[AskQ:submit] all ${pq.questions.length} questions answered, submitting via Enter on target=${pq.paneId}`
       );
       await new Promise((resolve) => setTimeout(resolve, 500));
       try {
-        const ready = await this.injector.waitForTui(pq.tmuxTarget, 5000);
+        const ready = await this.injector.waitForTui(pq.paneId, 5000);
         if (ready) {
-          this.injector.sendEnter(pq.tmuxTarget);
+          this.injector.sendEnter(pq.paneId);
         }
       } catch {
         /* best-effort submit */
       }
-      this.clearPending(pq.sessionId);
-      await this.bot.sendMessage(chatId, t("askQuestion.allAnswered")).catch(() => {});
+      this.clearPending(pq.paneId);
+      await this.bot.sendMessage(chatId, padMaxWidth(t("askQuestion.allAnswered"))).catch(() => {});
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
     await this.sendQuestion(chatId, pq, pq.currentIndex);
   }
 
+  private buildSessionLine(paneId: string): string {
+    const pane = this.paneRegistry?.getByPaneId(paneId);
+    if (!pane) return "";
+    const label = buildSessionLabel(pane.project, pane.model, paneId);
+    return `*${escapeMarkdownV2(label)}*`;
+  }
+
   private findPendingByNumericId(id: number): PendingQuestion | undefined {
-    const sessionId = this.pendingById.get(id);
-    if (!sessionId) return undefined;
-    return this.pending.get(sessionId);
+    const paneId = this.pendingById.get(id);
+    if (!paneId) return undefined;
+    return this.pending.get(paneId);
   }
 
-  private setPending(sessionId: string, pq: PendingQuestion): void {
-    this.clearPending(sessionId);
-    this.pending.set(sessionId, pq);
-    this.pendingById.set(pq.pendingId, sessionId);
-    const timer = setTimeout(() => this.clearPending(sessionId), EXPIRE_MS);
-    this.timers.set(sessionId, timer);
+  private setPending(paneId: string, pq: PendingQuestion): void {
+    this.clearPending(paneId);
+    this.pending.set(paneId, pq);
+    this.pendingById.set(pq.pendingId, paneId);
+    const timer = setTimeout(() => this.clearPending(paneId), EXPIRE_MS);
+    this.timers.set(paneId, timer);
   }
 
-  private clearPending(sessionId: string): void {
-    const pq = this.pending.get(sessionId);
+  private clearPending(paneId: string): void {
+    const pq = this.pending.get(paneId);
     if (pq) this.pendingById.delete(pq.pendingId);
-    this.pending.delete(sessionId);
-    const timer = this.timers.get(sessionId);
+    this.pending.delete(paneId);
+    const timer = this.timers.get(paneId);
     if (timer) clearTimeout(timer);
-    this.timers.delete(sessionId);
+    this.timers.delete(paneId);
   }
 }
 

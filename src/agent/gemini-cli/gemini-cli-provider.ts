@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 
 import { collectGitChanges } from "../../utils/git-collector.js";
-import { logDebug } from "../../utils/log.js";
+import { logger } from "../../utils/log.js";
 import { paths } from "../../utils/paths.js";
 import {
   AGENT_DISPLAY_NAMES,
@@ -9,7 +9,7 @@ import {
   type AgentEventResult,
   type AgentProvider,
 } from "../types.js";
-import { GeminiCliInstaller } from "./gemini-cli-installer.js";
+import { geminiCliInstaller } from "./gemini-cli-installer.js";
 import {
   extractProjectName,
   isValidAfterAgentEvent,
@@ -28,19 +28,19 @@ export class GeminiCliProvider implements AgentProvider {
   }
 
   isHookInstalled(): boolean {
-    return GeminiCliInstaller.isInstalled();
+    return geminiCliInstaller.isInstalled();
   }
 
-  installHook(port: number, secret: string): void {
-    GeminiCliInstaller.install(port, secret);
+  installHook(): void {
+    geminiCliInstaller.install();
   }
 
   uninstallHook(): void {
-    GeminiCliInstaller.uninstall();
+    geminiCliInstaller.uninstall();
   }
 
   verifyIntegrity(): { complete: boolean; missing: string[] } {
-    return GeminiCliInstaller.verifyIntegrity();
+    return geminiCliInstaller.verifyIntegrity();
   }
 
   parseEvent(raw: unknown): AgentEventResult {
@@ -49,7 +49,7 @@ export class GeminiCliProvider implements AgentProvider {
     }
 
     const event = parseAfterAgentEvent(raw);
-    logDebug(`[GeminiCli:raw] sessionId=${event.sessionId} cwd=${event.cwd}`);
+    logger.debug(`[GeminiCli:raw] sessionId=${event.sessionId} cwd=${event.cwd}`);
 
     let usage = { model: "" };
     try {
@@ -60,7 +60,7 @@ export class GeminiCliProvider implements AgentProvider {
 
     const gitChanges = event.cwd ? collectGitChanges(event.cwd) : [];
     const obj = raw as Record<string, unknown>;
-    const tmuxTarget = typeof obj.tmux_target === "string" ? obj.tmux_target : undefined;
+    const paneId = typeof obj.pane_id === "string" ? obj.pane_id : undefined;
 
     return {
       projectName: extractProjectName(event.cwd),
@@ -69,14 +69,14 @@ export class GeminiCliProvider implements AgentProvider {
       model: usage.model,
       agentSessionId: event.sessionId || undefined,
       cwd: event.cwd,
-      tmuxTarget,
+      paneId,
     };
   }
 
   private createFallbackResult(raw: unknown): AgentEventResult {
     const obj = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
     const cwd = typeof obj.cwd === "string" ? obj.cwd : "";
-    const tmuxTarget = typeof obj.tmux_target === "string" ? obj.tmux_target : undefined;
+    const paneId = typeof obj.pane_id === "string" ? obj.pane_id : undefined;
 
     return {
       projectName: cwd ? extractProjectName(cwd) : "unknown",
@@ -84,7 +84,7 @@ export class GeminiCliProvider implements AgentProvider {
       gitChanges: cwd ? collectGitChanges(cwd) : [],
       model: "",
       cwd,
-      tmuxTarget,
+      paneId,
     };
   }
 }

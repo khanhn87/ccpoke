@@ -4,14 +4,14 @@ import type {
   PermissionRequestEvent,
 } from "../agent/agent-handler.js";
 import type { AgentRegistry } from "../agent/agent-registry.js";
-import type { SessionMap } from "../tmux/session-map.js";
-import type { SessionStateManager } from "../tmux/session-state.js";
+import type { PaneRegistry } from "../tmux/pane-registry.js";
+import type { PaneStateManager } from "../tmux/pane-state-manager.js";
 import type { TmuxBridge } from "../tmux/tmux-bridge.js";
 import type { GitChangeStatus } from "../utils/constants.js";
 
 export interface ChannelDeps {
-  sessionMap?: SessionMap;
-  stateManager?: SessionStateManager;
+  paneRegistry?: PaneRegistry;
+  paneStateManager?: PaneStateManager;
   tmuxBridge?: TmuxBridge;
   registry?: AgentRegistry;
 }
@@ -32,7 +32,8 @@ export interface NotificationData {
   responseSummary: string;
   gitChanges: GitChange[];
   model: string;
-  sessionId?: string;
+  paneId?: string;
+  panePid?: string;
 }
 
 export interface GitChange {

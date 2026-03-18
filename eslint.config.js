@@ -11,7 +11,7 @@ export default defineConfig([
   {
     plugins: { prettier: prettierPlugin },
     rules: {
-      "prettier/prettier": "error",
+      "prettier/prettier": ["error", { "endOfLine": "lf" }],
       "@typescript-eslint/no-unused-vars": [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },

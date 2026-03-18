@@ -1,44 +1,57 @@
 import type TelegramBot from "node-telegram-bot-api";
 
 import type { PermissionRequestEvent } from "../../agent/agent-handler.js";
+import { AGENT_DISPLAY_NAMES, AgentName } from "../../agent/types.js";
 import { t } from "../../i18n/index.js";
-import type { SessionMap } from "../../tmux/session-map.js";
+import type { PaneRegistry } from "../../tmux/pane-registry.js";
 import type { TmuxBridge } from "../../tmux/tmux-bridge.js";
-import { log, logDebug, logError } from "../../utils/log.js";
+import { logger } from "../../utils/log.js";
+import {
+  isExitPlanMode,
+  parsePermissionCallback,
+  PermissionTuiInjector,
+} from "../permission-tui-injector.js";
+import { buildSessionLabel } from "../session-label.js";
 import { summarizeTool } from "../summarize-tool.js";
 import { escapeMarkdownV2 } from "./escape-markdown.js";
+import { padMaxWidth } from "./telegram-sender.js";
 
 interface PendingPermission {
   pendingId: number;
   sessionId: string;
-  tmuxTarget: string;
+  paneId: string;
   toolName: string;
   toolSummary: string;
+  planLabels?: string[];
   createdAt: number;
 }
 
 const EXPIRE_MS = 10 * 60 * 1000;
 const MAX_PENDING = 50;
+const NBSP = "\u00A0";
 
 export class PermissionRequestHandler {
   private pending = new Map<number, PendingPermission>();
   private timers = new Map<number, ReturnType<typeof setTimeout>>();
   private nextPendingId = 1;
   private processedCallbacks = new Set<string>();
+  private injector: PermissionTuiInjector;
 
   constructor(
     private bot: TelegramBot,
     private chatId: () => number | null,
-    private sessionMap: SessionMap,
-    private tmuxBridge: TmuxBridge
-  ) {}
+    private paneRegistry: PaneRegistry,
+    tmuxBridge: TmuxBridge
+  ) {
+    this.injector = new PermissionTuiInjector(tmuxBridge);
+  }
 
   async forwardPermission(event: PermissionRequestEvent): Promise<void> {
     const chat = this.chatId();
-    if (!chat || !event.tmuxTarget) return;
+    if (!chat || !event.paneId) return;
 
-    log(
-      `[PermReq] sessionId=${event.sessionId} tmuxTarget=${event.tmuxTarget} tool=${event.toolName}`
+    logger.info(
+      `[PermReq] sessionId=${event.sessionId} paneId=${event.paneId} tool=${event.toolName}`
     );
 
     if (this.pending.size >= MAX_PENDING) {
@@ -48,33 +61,43 @@ export class PermissionRequestHandler {
 
     const pendingId = this.nextPendingId++;
     const toolSummary = summarizeTool(event.toolName, event.toolInput);
-    const session = this.sessionMap.getBySessionId(event.sessionId);
-    const projectName = session?.project ?? "unknown";
+    const pane = this.paneRegistry.getByPaneId(event.paneId);
+    const projectName = pane?.project ?? "unknown";
+    const agentName = AGENT_DISPLAY_NAMES[pane?.agent ?? AgentName.ClaudeCode];
+
+    const planLabels = isExitPlanMode(event.toolName)
+      ? this.injector.extractPlanOptions(event.paneId)
+      : undefined;
 
     const pp: PendingPermission = {
       pendingId,
       sessionId: event.sessionId,
-      tmuxTarget: event.tmuxTarget,
+      paneId: event.paneId,
       toolName: event.toolName,
       toolSummary,
+      planLabels,
       createdAt: Date.now(),
     };
 
     this.setPending(pendingId, pp);
 
-    const text = this.formatMessage(projectName, event.toolName, toolSummary);
-    const keyboard: TelegramBot.InlineKeyboardMarkup = {
-      inline_keyboard: [
-        [
-          { text: `✅ ${t("permissionRequest.allow")}`, callback_data: `perm:a:${pendingId}` },
-          { text: `❌ ${t("permissionRequest.deny")}`, callback_data: `perm:d:${pendingId}` },
-        ],
-      ],
-    };
+    const text = padMaxWidth(
+      this.formatMessage(
+        projectName,
+        agentName,
+        event.toolName,
+        toolSummary,
+        event.paneId,
+        pane?.model ?? ""
+      )
+    );
+    const keyboard = planLabels
+      ? this.buildPlanKeyboard(pendingId, planLabels)
+      : this.buildStandardKeyboard(pendingId);
 
     await this.bot
       .sendMessage(chat, text, { parse_mode: "MarkdownV2", reply_markup: keyboard })
-      .catch((err: unknown) => logError("[PermReq] send failed", err));
+      .catch((err: unknown) => logger.error({ err }, "[PermReq] send failed"));
   }
 
   async handleCallback(query: TelegramBot.CallbackQuery): Promise<void> {
@@ -97,9 +120,8 @@ export class PermissionRequestHandler {
     const parts = query.data.split(":");
     if (parts.length < 3) return;
 
-    const action = parts[1];
+    const action = parts[1]!;
     const pendingId = parseInt(parts[2]!, 10);
-    const allow = action === "a";
 
     const pp = this.pending.get(pendingId);
     if (!pp) {
@@ -109,12 +131,25 @@ export class PermissionRequestHandler {
 
     await this.bot.answerCallbackQuery(query.id, { text: t("permissionRequest.sending") });
 
-    const resultText = allow
-      ? t("permissionRequest.allowed", { tool: pp.toolName, summary: pp.toolSummary })
-      : t("permissionRequest.denied", { tool: pp.toolName, summary: pp.toolSummary });
-    const resultEmoji = allow ? "✅" : "❌";
+    const injectionResult = parsePermissionCallback(action);
+
+    let resultText: string;
+    let resultEmoji: string;
+
+    if (injectionResult.action === "plan-option") {
+      const label = pp.planLabels?.[injectionResult.optionIndex!] ?? "";
+      resultText = t("permissionRequest.planApproved", { option: label });
+      resultEmoji = "✅";
+    } else {
+      const allow = injectionResult.action === "allow";
+      resultText = allow
+        ? t("permissionRequest.allowed", { tool: pp.toolName, summary: pp.toolSummary })
+        : t("permissionRequest.denied", { tool: pp.toolName, summary: pp.toolSummary });
+      resultEmoji = allow ? "✅" : "❌";
+    }
+
     await this.bot
-      .editMessageText(`${resultEmoji} ${escapeMarkdownV2(resultText)}`, {
+      .editMessageText(padMaxWidth(`${resultEmoji} ${escapeMarkdownV2(resultText)}`), {
         chat_id: query.message.chat.id,
         message_id: query.message.message_id,
         parse_mode: "MarkdownV2",
@@ -122,10 +157,10 @@ export class PermissionRequestHandler {
       .catch(() => {});
 
     try {
-      await this.injectResponse(pp.tmuxTarget, allow);
-      logDebug(`[PermReq] injected ${allow ? "allow" : "deny"} → ${pp.tmuxTarget}`);
+      await this.injector.inject(pp.paneId, injectionResult);
+      logger.debug(`[PermReq] injected ${injectionResult.action} → ${pp.paneId}`);
     } catch (err) {
-      logError(t("permissionRequest.injectionFailed"), err);
+      logger.error({ err }, t("permissionRequest.injectionFailed"));
     }
 
     this.clearPending(pendingId);
@@ -138,14 +173,48 @@ export class PermissionRequestHandler {
     this.processedCallbacks.clear();
   }
 
-  private async injectResponse(tmuxTarget: string, allow: boolean): Promise<void> {
-    const ready = await this.tmuxBridge.waitForTuiReady(tmuxTarget, 5000);
-    if (!ready) throw new Error("TUI not ready");
-    this.tmuxBridge.sendKeys(tmuxTarget, allow ? "y" : "n", ["Enter"]);
+  private buildPlanKeyboard(pendingId: number, labels: string[]): TelegramBot.InlineKeyboardMarkup {
+    const emojis = ["🔄", "⚡", "✋"];
+    const maxLen = Math.max(...labels.map((l) => l.length));
+    return {
+      inline_keyboard: labels.map((label, i) => [
+        {
+          text: `${emojis[i]} ${label}${NBSP.repeat(maxLen - label.length)}`,
+          callback_data: `perm:e${i}:${pendingId}`,
+        },
+      ]),
+    };
   }
 
-  private formatMessage(project: string, toolName: string, summary: string): string {
-    const header = `⚠️ *${escapeMarkdownV2(t("permissionRequest.title"))}*\n_${escapeMarkdownV2(project)}_`;
+  private buildStandardKeyboard(pendingId: number): TelegramBot.InlineKeyboardMarkup {
+    return {
+      inline_keyboard: [
+        [
+          { text: `✅ ${t("permissionRequest.allow")}`, callback_data: `perm:a:${pendingId}` },
+          { text: `❌ ${t("permissionRequest.deny")}`, callback_data: `perm:d:${pendingId}` },
+        ],
+      ],
+    };
+  }
+
+  private formatMessage(
+    project: string,
+    agent: string,
+    toolName: string,
+    summary: string,
+    paneId: string,
+    model: string
+  ): string {
+    const label = buildSessionLabel(project, model, paneId);
+
+    if (isExitPlanMode(toolName)) {
+      const titleLine = `*${escapeMarkdownV2(label)}*`;
+      const metaLine = `🐾 ${escapeMarkdownV2(agent)}`;
+      const planLine = `\n${escapeMarkdownV2(t("permissionRequest.planTitle"))}`;
+      return `${titleLine}\n${metaLine}\n${planLine}`;
+    }
+
+    const header = `⚠️ *${escapeMarkdownV2(t("permissionRequest.title"))}*\n_${escapeMarkdownV2(label)}_`;
     const tool = `🔧 *${escapeMarkdownV2(toolName)}*\n\`${escapeMarkdownV2(summary)}\``;
     return `${header}\n\n${tool}`;
   }

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 
 import { collectGitChanges } from "../../utils/git-collector.js";
-import { logDebug } from "../../utils/log.js";
+import { logger } from "../../utils/log.js";
 import { paths } from "../../utils/paths.js";
 import {
   AGENT_DISPLAY_NAMES,
@@ -9,7 +9,7 @@ import {
   type AgentEventResult,
   type AgentProvider,
 } from "../types.js";
-import { OpencodeInstaller } from "./opencode-installer.js";
+import { opencodeInstaller } from "./opencode-installer.js";
 import { extractProjectName, isValidOpencodeEvent, parseOpencodeEvent } from "./opencode-parser.js";
 
 export class OpencodeProvider implements AgentProvider {
@@ -23,19 +23,19 @@ export class OpencodeProvider implements AgentProvider {
   }
 
   isHookInstalled(): boolean {
-    return OpencodeInstaller.isInstalled();
+    return opencodeInstaller.isInstalled();
   }
 
-  installHook(port: number, secret: string): void {
-    OpencodeInstaller.install(port, secret);
+  installHook(): void {
+    opencodeInstaller.install();
   }
 
   uninstallHook(): void {
-    OpencodeInstaller.uninstall();
+    opencodeInstaller.uninstall();
   }
 
   verifyIntegrity(): { complete: boolean; missing: string[] } {
-    return OpencodeInstaller.verifyIntegrity();
+    return opencodeInstaller.verifyIntegrity();
   }
 
   parseEvent(raw: unknown): AgentEventResult {
@@ -44,11 +44,11 @@ export class OpencodeProvider implements AgentProvider {
     }
 
     const event = parseOpencodeEvent(raw);
-    logDebug(`[OpenCode:raw] sessionId=${event.sessionId} cwd=${event.cwd}`);
+    logger.debug(`[OpenCode:raw] sessionId=${event.sessionId} cwd=${event.cwd}`);
 
     const gitChanges = event.cwd ? collectGitChanges(event.cwd) : [];
     const obj = raw as Record<string, unknown>;
-    const tmuxTarget = typeof obj.tmux_target === "string" ? obj.tmux_target : undefined;
+    const paneId = typeof obj.pane_id === "string" ? obj.pane_id : undefined;
 
     return {
       projectName: extractProjectName(event.cwd),
@@ -57,14 +57,14 @@ export class OpencodeProvider implements AgentProvider {
       model: event.model,
       agentSessionId: event.sessionId || undefined,
       cwd: event.cwd,
-      tmuxTarget,
+      paneId,
     };
   }
 
   private createFallbackResult(raw: unknown): AgentEventResult {
     const obj = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
     const cwd = typeof obj.cwd === "string" ? obj.cwd : "";
-    const tmuxTarget = typeof obj.tmux_target === "string" ? obj.tmux_target : undefined;
+    const paneId = typeof obj.pane_id === "string" ? obj.pane_id : undefined;
 
     return {
       projectName: cwd ? extractProjectName(cwd) : "unknown",
@@ -72,7 +72,7 @@ export class OpencodeProvider implements AgentProvider {
       gitChanges: cwd ? collectGitChanges(cwd) : [],
       model: "",
       cwd,
-      tmuxTarget,
+      paneId,
     };
   }
 }

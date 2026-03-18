@@ -34,10 +34,9 @@ export const en: TranslationKeys = {
     firstTimeSetup: "no config found — starting setup wizard...",
     globalInstallTip: "💡 Tip: run 'npm i -g ccpoke' for faster startup",
     alreadyRunning:
-      "another ccpoke is already running on port {port}\n\n  To stop it:\n    kill $(lsof -ti:{port})\n",
+      "another ccpoke is already running on port {port}\n\n  To stop it:\n    {killCommand}\n",
     twowayEnabled: "📱 2-way chat: enabled",
     twowayDisabled: "📱 2-way chat: disabled (no tmux)",
-    windowsNoTwoWay: "2-way chat is not supported (tmux is unavailable on Windows)",
   },
 
   setup: {
@@ -64,7 +63,7 @@ export const en: TranslationKeys = {
     completeAutoStart: "🎉 Setup complete! Starting bot...",
     languageMessage: "Language",
     tokenUnchanged: "Bot token unchanged — skipping verification",
-    selectAgents: "Select AI agents (space to toggle)",
+    selectAgents: "Select AI agents detected on your machine (space to toggle)",
     agentDetected: "detected",
     agentNotInstalled: "{agent} is not installed on this machine",
     agentHookInstalled: "{agent} hook installed",
@@ -78,6 +77,13 @@ export const en: TranslationKeys = {
     tmuxInstallFailed:
       "Failed to install tmux automatically. Install it manually:\n  macOS: brew install tmux\n  Linux: sudo apt install tmux",
     tmuxInstallSkipped: "Skipped tmux install — 2-way chat disabled, notifications still work",
+    tmuxWindowsInstallPrompt: "Install tmux for 2-way chat support on Windows?",
+    tmuxWindowsInstallFailed:
+      "Failed to install psmux. Visit https://github.com/marlocarlo/psmux/releases for manual download.",
+    psmuxDownloading: "Downloading psmux from GitHub...",
+    psmuxDownloadFailed: "Failed to download psmux from GitHub",
+    tmuxWindowsPathRefreshHint:
+      "To use tmux, close your current terminal or VS Code and reopen it so the updated PATH takes effect.",
     addProjectPrompt: "Add a project to create agent sessions?",
     addAnotherProject: "Add another project?",
     projectAdded: 'Added "{name}" → {path}',
@@ -111,6 +117,16 @@ export const en: TranslationKeys = {
     slackChannelNotMember:
       "Bot is not in this channel. Invite it first: /invite @{name} in the channel",
     slackChannelVerified: "✓ Bot can post to this channel",
+    tunnelMessage: "Tunnel provider (exposes local server to internet)",
+    tunnelCustomUrlMessage: "Enter your public HTTPS URL",
+    tunnelCustomUrlPlaceholder: "https://your-domain.com",
+    ngrokAuthtokenMessage:
+      "Enter your ngrok authtoken (get it at https://dashboard.ngrok.com/get-started/your-authtoken)",
+    ngrokAuthtokenPlaceholder: "2abc...xyz",
+    ngrokAuthtokenRequired: "ngrok authtoken is required",
+    ngrokVerifying: "Verifying ngrok authtoken…",
+    ngrokVerified: "ngrok authtoken verified",
+    ngrokVerifyFailed: "ngrok authtoken verification failed — check your token",
   },
 
   uninstall: {
@@ -162,6 +178,7 @@ export const en: TranslationKeys = {
     cmdHelp: "  help        Show this help message",
     cmdProject: "  project     Manage registered projects",
     cmdChannel: "  channel     Switch notification channel (telegram/discord/slack)",
+    cmdBug: "  bug         Report a bug (collects diagnostics + logs)",
     docs: "docs → https://github.com/kaida-palooza/ccpoke",
   },
 
@@ -188,6 +205,15 @@ export const en: TranslationKeys = {
     retrying: "tunnel retry {attempt}/{max} in {seconds}s...",
     attemptFailed: "tunnel attempt {attempt} failed: {error}",
     autoRestart: "tunnel exited unexpectedly, restarting...",
+    disabled: "tunnel disabled",
+    usingProvider: "using tunnel provider: {provider}",
+    invalidTunnelType: "invalid tunnel type: {type}",
+    customUrlMustBeHttps: "custom URL must use HTTPS",
+    customUrlInvalid: "custom URL must start with https://",
+    ngrokAuthtokenRequired: "ngrok authtoken is required",
+    ngrokNoUrl: "ngrok connected but returned no URL",
+    ngrokNoAutoRestart: "ngrok does not support auto-restart — restart ccpoke if tunnel drops",
+    ngrokCloseFailed: "failed to close ngrok listener",
   },
 
   config: {
@@ -219,7 +245,7 @@ export const en: TranslationKeys = {
   },
   tmux: {
     notAvailable: "tmux not installed — 2-way chat disabled, notifications still work",
-    scanComplete: "tmux: found {count} Claude Code session(s)",
+    scanComplete: "tmux: found {count} session(s)",
     sessionRegistered: "Session registered: {sessionId} → {target} ({project})",
     sessionDiscovered: "Session discovered: {target} ({project})",
     sessionLost: "Session lost: {target} ({project})",
@@ -231,11 +257,20 @@ export const en: TranslationKeys = {
   chat: {
     placeholder: "Message to Claude...",
     replyHint: "Type your message below ↓",
+    directMessageHint:
+      "Direct messages are not supported. Use the 💬 Chat button on a notification or in /sessions.",
     sessionExpired: "Session expired or closed",
     sessionNotFound: "Session not found",
     tmuxDead: "tmux session disconnected",
+    paneDead: "Pane no longer exists",
+    noAgent: "No agent running in pane",
+    sentToShell: "📩 Sent to shell (agent not running) → {project}",
+    agentStarting: "Agent starting up, please wait...",
+    agentNotRunning: "Agent is not running",
     sent: "📩 Sent → {project}",
     busy: "⏳ Claude is busy — try again later",
+    cancelButton: "Cancel",
+    cancelled: "Cancelled",
   },
   sessions: {
     title: "Active Sessions",
@@ -282,6 +317,7 @@ export const en: TranslationKeys = {
   },
   permissionRequest: {
     title: "Permission Request",
+    planTitle: "Plan Approval",
     allow: "Allow",
     deny: "Deny",
     allowed: "Allowed: {tool} → {summary}",
@@ -289,6 +325,7 @@ export const en: TranslationKeys = {
     sending: "Sending...",
     sessionExpired: "Session expired",
     injectionFailed: "Failed to send. Try in terminal.",
+    planApproved: "Plan approved: {option}",
   },
   projectCmd: {
     intro: "📁 Project Manager",
@@ -320,5 +357,19 @@ export const en: TranslationKeys = {
     cancelled: "Cancelled.",
     notConfigured: '"{channel}" is not configured yet.',
     configureNow: "Configure {channel} now?",
+  },
+  bug: {
+    intro: "🐛 ccpoke bug report",
+    descriptionPrompt: "Describe the bug briefly",
+    descriptionPlaceholder: "e.g. notifications stopped arriving after update",
+    cancelled: "Bug report cancelled.",
+    collecting: "Collecting diagnostics...",
+    saved: "Report saved → {path}",
+    openingFolder: "Opening file location...",
+    issueLink: "Open this link to create a GitHub issue:",
+    attachHint: "📎 Please attach the bug-report .txt file below",
+    instructions:
+      "Done!\n\n  1. Open the GitHub link above\n  2. Drag the .txt file into the issue\n  3. Submit",
+    noLogFile: "No log file found at {path} — diagnostics only",
   },
 };

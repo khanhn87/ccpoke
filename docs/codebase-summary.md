@@ -79,18 +79,51 @@ Implements the **Provider Pattern** for multi-agent support.
 
 Implements the **Adapter Pattern** for multi-channel support.
 
+#### Telegram Callback Encoding (Pane-Centric)
+
+Telegram inline button callbacks have a 64-byte limit. To preserve pane identity across Telegram interactions:
+
+**buildTargetCallback(prefix: string, tmuxTarget: string, panePid: string):** `string`
+- Encodes tmuxTarget + panePid into callback_data
+- Format: `"{prefix}:{tmuxTarget}:{panePid}"` (e.g., `"chat:0:1:1234"`)
+- Automatically truncates tmuxTarget if needed to fit 64-byte limit
+- Preserves window:pane suffix (e.g., `:1.0`) to maintain unique identity
+
+**parseTargetCallback(data: string, prefix: string):** `TargetCallback | null`
+- Decodes callback_data back to `{ tmuxTarget, panePid }`
+- Validates format and panePid is numeric
+- Returns null if invalid format
+
+**Example Flow:**
+```typescript
+// Encoding (when sending Chat button)
+const panePid = queryPanePid("0:1") ?? "0";
+const callback = buildTargetCallback("chat", "0:1", panePid);
+// Result: "chat:0:1:1234" (max 64 bytes)
+
+// Decoding (when user clicks button)
+const parsed = parseTargetCallback(query.data, "chat");
+if (parsed) {
+  const { tmuxTarget, panePid } = parsed;
+  const health = checkPaneHealth(tmuxTarget);
+  // Safe to proceed if health.paneExists && health.agentRunning
+}
+```
+
 #### Key Files
 
 | File | LOC | Responsibility |
 |------|-----|-----------------|
-| **types.ts** | 25 | `NotificationChannel` interface definition |
-| **telegram/telegram-channel.ts** | 730 | Bot lifecycle, Telegram handlers, notification formatting, session management |
+| **types.ts** | 25 | `NotificationChannel` interface, `NotificationData` (tmuxTarget, panePid fields) |
+| **telegram/telegram-channel.ts** | 730 | Bot lifecycle, Telegram handlers, notification formatting, pane-centric session management |
 | **telegram/telegram-sender.ts** | 97 | Message sending, pagination, Markdown escaping |
 | **telegram/pending-reply-store.ts** | 56 | In-memory store for tracking pending replies (no TTL, evict at 200 entries, cleanup on reply/shutdown) |
-| **telegram/session-list.ts** | 60 | `/sessions` command formatting with state emojis and Chat buttons |
-| **telegram/prompt-handler.ts** | 163 | Forwards elicitation_dialog and idle_prompt events with force_reply |
-| **telegram/permission-request-handler.ts** | 192 | Forward tool-use Allow/Deny decisions to Telegram inline keyboard |
-| **telegram/ask-question-handler.ts** | 377 | Forward AskUserQuestion to Telegram with multi-step inline keyboards |
+| **telegram/session-list.ts** | 60 | `/sessions` command formatting with state emojis and Chat buttons (pane-centric with panePid callbacks) |
+| **telegram/callback-parser.ts** | ~35 | `buildTargetCallback()`, `parseTargetCallback()` for encoding/decoding pane info in callbacks (max 64 bytes) |
+| **telegram/prompt-handler.ts** | 163 | Forwards elicitation_dialog and idle_prompt events with force_reply (pane-centric callback encoding) |
+| **telegram/permission-request-handler.ts** | 192 | Forward tool-use Allow/Deny decisions to Telegram inline keyboard (pane-centric) |
+| **telegram/permission-tui-injector.ts** | - | Shared keystroke injection for permission dialogs (allow/deny + ExitPlanMode plan options) |
+| **telegram/ask-question-handler.ts** | 377 | Forward AskUserQuestion to Telegram with multi-step inline keyboards (pane-centric) |
 | **telegram/ask-question-keyboard-builder.ts** | - | Build dynamic inline keyboards for question responses |
 | **telegram/ask-question-tui-injector.ts** | - | Inject keystroke answers into terminal UI |
 | **telegram/project-list.ts** | - | Format /projects inline keyboard with project paths |
@@ -98,28 +131,71 @@ Implements the **Adapter Pattern** for multi-channel support.
 | **slack/slack-channel.ts** | 47 | Slack WebClient lifecycle, initialize via auth.test(), sendNotification |
 | **slack/slack-sender.ts** | 36 | Slack Web API wrapper; splits >50 Block Kit blocks into chunks |
 | **slack/slack-block-builder.ts** | 70 | Builds `KnownBlock[]` from `NotificationData` (header, fields, summary, context, action button) |
-| **discord/discord-channel.ts** | ~340 | Discord bot lifecycle, DM channel, interaction/message event routing |
+| **discord/discord-channel.ts** | ~340 | Discord bot lifecycle, DM channel, interaction/message event routing (pane-centric) |
 | **discord/discord-sender.ts** | ~40 | Sends embeds to Discord DM with error handling |
 | **discord/discord-markdown.ts** | ~50 | NotificationData → Discord EmbedBuilder formatting |
 | **discord/discord-permission-handler.ts** | ~180 | Allow/Deny button builder + interactionCreate handler |
 | **discord/discord-ask-question-handler.ts** | ~330 | Single/multi-select buttons, "Other" free-text, 5-row cap |
 | **discord/discord-prompt-handler.ts** | ~140 | Elicitation/idle prompt forwarding with DM reply capture |
-| **discord/discord-session-command-handler.ts** | ~210 | /sessions, /projects slash commands + session list embed |
+| **discord/discord-session-command-handler.ts** | ~210 | /sessions, /projects slash commands + session list embed (pane-centric with panePid queries) |
 | **discord/discord-agent-launcher.ts** | ~75 | Launch agent sessions from Discord project selection |
 
 ### Terminal Session Management (`src/tmux/`)
 
-Implements the **Bridge Pattern** for tmux operations.
+Implements the **Bridge Pattern** for tmux operations with **pane-centric design**.
+
+#### Pane-Centric Architecture
+
+**Core Interface (PaneMetadata):**
+```typescript
+interface PaneMetadata {
+  tmuxTarget: string;          // Key: tmux target (e.g., "0:1", "0:2.1")
+  project: string;             // Project name
+  cwd: string;                 // Working directory
+  label: string;               // Display label
+  state: SessionState;         // idle | busy | blocked | unknown | launching
+  model: string;               // LLM model
+  agent: AgentName;            // Agent type
+  lastActivity: Date;          // Last activity timestamp
+}
+
+// Backward compatibility alias
+type TmuxSession = PaneMetadata;
+```
+
+**Session Key Change:**
+- **SessionMap** keyed by `tmuxTarget` (not UUID-based sessionId)
+- Benefits: Stable identity across restarts, no UUID generation, direct tmux target mapping
+
+#### Pane Utilities
+
+**queryPanePid(target: string):** `string | undefined`
+- Queries current PID running in a specific pane
+- Returns decimal string (e.g., "1234") or undefined if pane absent
+
+**checkPaneHealth(target: string, tree?: ProcessTree):** `PaneHealth`
+- Validates pane exists and agent process is active
+- Returns: `{ paneExists: boolean, agentRunning: boolean, processName?: string }`
+- Used by all callback handlers to prevent stale pane operations
+
+**Example Usage:**
+```typescript
+const pid = queryPanePid("0:1");
+const health = checkPaneHealth("0:1");
+if (health.agentRunning) {
+  // Safe to inject keys, update state
+}
+```
 
 #### Key Files
 
 | File | LOC | Responsibility |
 |------|-----|-----------------|
 | **tmux-bridge.ts** | 89 | Low-level tmux CLI wrapper (send-keys, capture-pane, create-window, kill-pane) |
-| **tmux-scanner.ts** | 264 | Multi-agent pane detection, process tree search, session discovery (AGENT_PATTERNS array) |
-| **session-map.ts** | 160 | Session registry, persistence, state tracking (idle/busy/blocked/unknown), LRU eviction |
+| **tmux-scanner.ts** | 264 | Multi-agent pane detection, process tree search, session discovery, `queryPanePid()`, `checkPaneHealth()` utilities |
+| **session-map.ts** | 160 | Pane-centric session registry (keyed by tmuxTarget), `PaneMetadata` interface, state tracking (idle/busy/blocked/unknown/launching), LRU eviction |
 | **session-state.ts** | 114 | Message queue, keystroke injection, state machine, agent-specific submitKeys |
-| **tmux-session-resolver.ts** | 67 | Links notification sessions to tmux targets |
+| **tmux-session-resolver.ts** | 67 | Implements `ChatSessionResolver` interface, links notifications to tmux targets via `resolveTmuxTarget()` |
 
 ### API Server (`src/server/`)
 
@@ -171,12 +247,17 @@ Handles config persistence and schema migrations.
 | **markdown.ts** | - | Markdown to Telegram MarkdownV2 conversion |
 | **response-store.ts** | - | Stores responses by session ID (24h TTL, max 100) |
 | **stats-format.ts** | - | Formats execution stats (duration, tokens) |
-| **tunnel.ts** | - | Cloudflare tunnel integration with retry logic and auto-restart |
+| **tunnel.ts** | - | Tunnel manager (retry logic, auto-restart on process exit) |
+| **tunnel-types.ts** | - | `TunnelType`, `TunnelProvider` interface, retry constants |
+| **tunnel-provider-factory.ts** | - | Factory for creating tunnel provider instances |
+| **tunnel-providers/cloudflare-tunnel-provider.ts** | - | Cloudflare Tunnel implementation |
+| **tunnel-providers/ngrok-tunnel-provider.ts** | - | ngrok Tunnel implementation (requires authtoken) |
+| **tunnel-providers/custom-url-tunnel-provider.ts** | - | Custom HTTPS URL provider (passthrough) |
 | **version-check.ts** | - | npm version checking |
 | **install-detection.ts** | - | Detects installed agents (Claude Code, Cursor, Codex) |
 | **shell-completion.ts** | - | zsh/bash tab completion generation |
 | **path-prompt.ts** | - | Interactive path input with tab completion |
-| **log.ts** | - | Structured logging (debug, info, warn, error) |
+| **log.ts** | 64 | Pino v10 logger wrapper (async file + pretty console, rotates at 2MB) |
 
 ### Entry Point (`src/index.ts`)
 
@@ -263,32 +344,35 @@ interface NotificationChannel {
 
 ### 5. State Machine
 
-**Purpose:** Session lifecycle management.
+**Purpose:** Pane lifecycle management.
 
 ```
 idle → blocked → busy → idle
   └─────→ busy ────→ idle
+launching → idle
+  └─────→ unknown
 ```
 
 - **idle** — No activity, ready to accept messages
-- **blocked** — Waiting for user input (elicitation or permission request hook)
 - **busy** — Agent processing, queue messages
+- **blocked** — Waiting for user input (elicitation or permission request hook)
+- **launching** — Agent session starting up
 - **unknown** — Unable to determine state
 
-### 6. Store Pattern
+### 6. Store Pattern (Pane-Centric)
 
 **Purpose:** Centralized state management with persistence.
 
 - **ConfigManager** — Persistent config store
-- **SessionMap** — Persistent session registry
-- **ResponseStore** — Response by session ID
+- **SessionMap** — Persistent pane-centric session registry (keyed by tmuxTarget)
+- **ResponseStore** — Response by tmuxTarget
 - **PendingReplyStore** — In-memory reply tracking
 
 ---
 
 ## Data Flow
 
-### Notification Flow (Stop Hook)
+### Notification Flow (Stop Hook, Pane-Centric)
 
 ```
 1. Claude Code completes response
@@ -300,12 +384,15 @@ idle → blocked → busy → idle
    - Load transcript (NDJSON)
    - Extract last response
    - Collect git changes
-5. Resolve tmux session (SessionResolver)
-6. Store response (ResponseStore)
+   - Resolve tmuxTarget via resolveTmuxTarget()
+   - Query panePid via queryPanePid(tmuxTarget)
+5. SessionResolver links to pane (by tmuxTarget)
+6. Store response (ResponseStore, keyed by tmuxTarget)
 7. TelegramChannel formats & sends
    - Markdown conversion
    - Pagination if needed
    - Add git diff summary
+   - Encode callback: buildTargetCallback("chat", tmuxTarget, panePid)
 ```
 
 ### Elicitation Dialog Flow
@@ -315,43 +402,54 @@ idle → blocked → busy → idle
 2. Notification hook: POST /hook/notification
    - notification_type: elicitation_dialog
    - message: the prompt
+   - tmuxTarget: pane target (replaces session_id)
    - title: optional
 3. AgentHandler.handleNotification():
-   - Resolve session
+   - Resolve tmuxTarget (pane-centric)
+   - Query panePid via queryPanePid(tmuxTarget)
    - Update state → blocked
 4. PromptHandler forwards to Telegram
+   - Encode callback: buildTargetCallback("elicit", tmuxTarget, panePid)
    - force_reply + selective markup
    - User types response
 5. Message reply detection
-6. PromptHandler.injectElicitationResponse()
+6. parseTargetCallback("elicit") → {tmuxTarget, panePid}
+7. checkPaneHealth(tmuxTarget) validates pane is live
+8. PromptHandler.injectElicitationResponse()
    - Send response via tmux send-keys
    - Update state → busy
-7. Claude Code continues with user input
 ```
 
-### Two-Way Chat Flow
+### Two-Way Chat Flow (Pane-Centric)
 
 ```
 1. User sends message in Telegram
 2. TelegramChannel receives update
-3. Resolve target session (SessionResolver)
-4. Inject message via tmux send-keys
-5. Poll JSONL transcript for response
-6. Send response back to Telegram
+3. Parse callback via parseTargetCallback() → {tmuxTarget, panePid}
+4. Check pane health via checkPaneHealth(tmuxTarget)
+5. Resolve target pane (SessionResolver, by tmuxTarget)
+6. Inject message via tmux send-keys
+7. Poll JSONL transcript for response
+8. Send response back to Telegram
 ```
 
-### Session Lifecycle
+### Session Lifecycle (Pane-Centric)
 
 ```
-1. SessionStart hook triggers
-2. Register in SessionMap
+1. SessionStart hook triggers (provides tmuxTarget)
+2. Register in SessionMap by tmuxTarget
 3. Periodic 30s scanner sync
-   - Check live panes
-   - Detect new/stale sessions
+   - List live panes
+   - Query panePid for each via queryPanePid()
+   - Check health via checkPaneHealth()
+   - Detect new panes and auto-register
    - Update last_activity
 4. Stale sessions (30min idle) pruned
 5. Persist to ~/.ccpoke/sessions.json
 6. Bot restart loads from persistence
+   - Validate tmuxTarget field present
+   - Reconcile with live tmux state
+   - Query current paneIds
 ```
 
 ---

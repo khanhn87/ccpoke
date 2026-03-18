@@ -32,11 +32,9 @@ export const zh: TranslationKeys = {
     sendFallbackFailed: "备用方式也失败",
     firstTimeSetup: "未找到配置 — 正在启动设置向导...",
     globalInstallTip: "💡 提示: 运行 'npm i -g ccpoke' 可加快启动速度",
-    alreadyRunning:
-      "另一个 ccpoke 已在端口 {port} 上运行\n\n  停止方法:\n    kill $(lsof -ti:{port})\n",
+    alreadyRunning: "另一个 ccpoke 已在端口 {port} 上运行\n\n  停止方法:\n    {killCommand}\n",
     twowayEnabled: "📱 双向聊天: 已启用",
     twowayDisabled: "📱 双向聊天: 已禁用 (无 tmux)",
-    windowsNoTwoWay: "双向聊天不可用 (tmux 不支持 Windows)",
   },
 
   setup: {
@@ -63,7 +61,7 @@ export const zh: TranslationKeys = {
     completeAutoStart: "🎉 设置完成！正在启动 bot...",
     languageMessage: "语言",
     tokenUnchanged: "Token 未更改 — 跳过验证",
-    selectAgents: "选择 AI 代理 (空格键切换)",
+    selectAgents: "请选择在您机器上检测到的 AI 代理 (空格键切换)",
     agentDetected: "已检测",
     agentNotInstalled: "{agent} 未安装在此设备上",
     agentHookInstalled: "{agent} hook 已安装",
@@ -77,6 +75,13 @@ export const zh: TranslationKeys = {
     tmuxInstallFailed:
       "无法自动安装 tmux。请手动安装:\n  macOS: brew install tmux\n  Linux: sudo apt install tmux",
     tmuxInstallSkipped: "跳过 tmux 安装 — 双向聊天已禁用，通知仍正常工作",
+    tmuxWindowsInstallPrompt: "安装 tmux 以支持 Windows 上的双向聊天？",
+    tmuxWindowsInstallFailed:
+      "安装 psmux 失败。请访问 https://github.com/marlocarlo/psmux/releases 手动下载。",
+    psmuxDownloading: "正在从 GitHub 下载 psmux...",
+    psmuxDownloadFailed: "从 GitHub 下载 psmux 失败",
+    tmuxWindowsPathRefreshHint:
+      "要使用 tmux，请关闭当前终端或 VS Code，然后重新打开以使更新的 PATH 生效。",
     addProjectPrompt: "添加项目以创建 agent 会话？",
     addAnotherProject: "添加另一个项目？",
     projectAdded: '已添加 "{name}" → {path}',
@@ -109,6 +114,16 @@ export const zh: TranslationKeys = {
     slackVerifyingChannel: "正在验证 bot 是否在频道中...",
     slackChannelNotMember: "Bot 不在此频道中。请先在频道中执行 /invite @{name}",
     slackChannelVerified: "✓ Bot 可以发送消息到此频道",
+    tunnelMessage: "隧道提供商（将本地服务器暴露到互联网）",
+    tunnelCustomUrlMessage: "输入您的公共 HTTPS URL",
+    tunnelCustomUrlPlaceholder: "https://your-domain.com",
+    ngrokAuthtokenMessage:
+      "输入 ngrok authtoken（获取地址：https://dashboard.ngrok.com/get-started/your-authtoken）",
+    ngrokAuthtokenPlaceholder: "2abc...xyz",
+    ngrokAuthtokenRequired: "ngrok authtoken 是必填项",
+    ngrokVerifying: "正在验证 ngrok authtoken…",
+    ngrokVerified: "ngrok authtoken 验证成功",
+    ngrokVerifyFailed: "ngrok authtoken 验证失败 — 请检查您的 token",
   },
 
   uninstall: {
@@ -160,6 +175,7 @@ export const zh: TranslationKeys = {
     cmdHelp: "  help        显示此帮助信息",
     cmdProject: "  project     管理已注册项目",
     cmdChannel: "  channel     切换通知渠道 (telegram/discord/slack)",
+    cmdBug: "  bug         报告 bug（收集诊断信息 + 日志）",
     docs: "文档 → https://github.com/kaida-palooza/ccpoke",
   },
 
@@ -186,6 +202,15 @@ export const zh: TranslationKeys = {
     retrying: "隧道重试 {attempt}/{max}，{seconds}秒后...",
     attemptFailed: "隧道第 {attempt} 次尝试失败: {error}",
     autoRestart: "隧道意外退出，正在重新启动...",
+    disabled: "隧道已禁用",
+    usingProvider: "使用隧道提供商: {provider}",
+    invalidTunnelType: "无效的隧道类型: {type}",
+    customUrlMustBeHttps: "自定义 URL 必须使用 HTTPS",
+    customUrlInvalid: "自定义 URL 必须以 https:// 开头",
+    ngrokAuthtokenRequired: "ngrok authtoken 是必填项",
+    ngrokNoUrl: "ngrok 已连接但未返回 URL",
+    ngrokNoAutoRestart: "ngrok 不支持自动重启 — 如果隧道断开请重启 ccpoke",
+    ngrokCloseFailed: "关闭 ngrok listener 失败",
   },
 
   config: {
@@ -217,7 +242,7 @@ export const zh: TranslationKeys = {
   },
   tmux: {
     notAvailable: "未安装 tmux — 双向聊天已禁用，通知仍正常工作",
-    scanComplete: "tmux: 找到 {count} 个 Claude Code 会话",
+    scanComplete: "tmux: 找到 {count} 个会话",
     sessionRegistered: "已注册会话: {sessionId} → {target} ({project})",
     sessionDiscovered: "发现会话: {target} ({project})",
     sessionLost: "失去会话: {target} ({project})",
@@ -229,11 +254,19 @@ export const zh: TranslationKeys = {
   chat: {
     placeholder: "给 Claude 发消息...",
     replyHint: "在下方输入消息 ↓",
+    directMessageHint: "不支持直接发消息。请使用通知或 /sessions 中的 💬 Chat 按钮。",
     sessionExpired: "会话已过期或关闭",
     sessionNotFound: "未找到会话",
     tmuxDead: "tmux 会话已断开",
+    paneDead: "面板已不存在",
+    noAgent: "面板中没有运行的代理",
+    sentToShell: "📩 已发送到终端 (代理未运行) → {project}",
+    agentStarting: "代理正在启动，请稍候...",
+    agentNotRunning: "代理未在运行",
     sent: "📩 已发送 → {project}",
     busy: "⏳ Claude 正在忙 — 请稍后再试",
+    cancelButton: "取消",
+    cancelled: "已取消",
   },
   sessions: {
     title: "活跃会话",
@@ -280,6 +313,7 @@ export const zh: TranslationKeys = {
   },
   permissionRequest: {
     title: "权限请求",
+    planTitle: "审批计划",
     allow: "允许",
     deny: "拒绝",
     allowed: "已允许: {tool} → {summary}",
@@ -287,6 +321,7 @@ export const zh: TranslationKeys = {
     sending: "发送中...",
     sessionExpired: "会话已过期",
     injectionFailed: "发送失败，请在终端操作。",
+    planApproved: "计划已批准: {option}",
   },
   projectCmd: {
     intro: "📁 项目管理",
@@ -318,5 +353,18 @@ export const zh: TranslationKeys = {
     cancelled: "已取消。",
     notConfigured: '"{channel}" 尚未配置。',
     configureNow: "现在配置 {channel}？",
+  },
+  bug: {
+    intro: "🐛 ccpoke 错误报告",
+    descriptionPrompt: "简要描述遇到的问题",
+    descriptionPlaceholder: "例如：更新后通知停止工作",
+    cancelled: "已取消错误报告。",
+    collecting: "正在收集诊断信息...",
+    saved: "报告已保存 → {path}",
+    openingFolder: "正在打开文件位置...",
+    issueLink: "打开此链接创建 GitHub issue:",
+    attachHint: "📎 请在下方附上 bug-report .txt 文件",
+    instructions: "完成！\n\n  1. 打开上方 GitHub 链接\n  2. 将 .txt 文件拖入 issue\n  3. 提交",
+    noLogFile: "未找到日志文件 {path} — 仅包含诊断信息",
   },
 };

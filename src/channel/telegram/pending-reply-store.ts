@@ -1,14 +1,15 @@
 interface PendingReply {
   chatId: number;
   messageId: number;
-  sessionId: string;
+  paneId: string;
+  panePid: string;
   project: string;
 }
 
 export type OnCleanupCallback = (chatId: number, messageId: number) => void;
 
 const MAX_ENTRIES = 200;
-const TTL_MS = 600_000; // 10 minutes
+const TTL_MS = 600_000;
 
 export class PendingReplyStore {
   private pending = new Map<string, PendingReply>();
@@ -19,10 +20,10 @@ export class PendingReplyStore {
     this.onCleanup = cb;
   }
 
-  set(chatId: number, messageId: number, sessionId: string, project: string): void {
+  set(chatId: number, messageId: number, paneId: string, panePid: string, project: string): void {
     const key = PendingReplyStore.key(chatId, messageId);
     this.clearTimer(key);
-    this.pending.set(key, { chatId, messageId, sessionId, project });
+    this.pending.set(key, { chatId, messageId, paneId, panePid, project });
     this.evictOldest();
 
     this.timers.set(

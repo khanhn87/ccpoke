@@ -34,10 +34,9 @@ export const vi: TranslationKeys = {
     firstTimeSetup: "chưa có config — bắt đầu setup...",
     globalInstallTip: "💡 Tip: chạy 'npm i -g ccpoke' để khởi động nhanh hơn",
     alreadyRunning:
-      "một ccpoke khác đang chạy trên port {port}\n\n  Để dừng nó:\n    kill $(lsof -ti:{port})\n",
+      "một ccpoke khác đang chạy trên port {port}\n\n  Để dừng nó:\n    {killCommand}\n",
     twowayEnabled: "📱 Chat 2 chiều: đã bật",
     twowayDisabled: "📱 Chat 2 chiều: tắt (không có tmux)",
-    windowsNoTwoWay: "Chat 2 chiều không khả dụng (tmux không hỗ trợ trên Windows)",
   },
 
   setup: {
@@ -64,7 +63,7 @@ export const vi: TranslationKeys = {
     completeAutoStart: "🎉 Setup hoàn tất! Đang khởi động bot...",
     languageMessage: "Ngôn ngữ",
     tokenUnchanged: "Token không đổi — bỏ qua xác thực",
-    selectAgents: "Chọn AI agents (ấn cách để chọn)",
+    selectAgents: "Hãy chọn AI agents đã phát hiện được trong máy bạn (ấn cách để chọn)",
     agentDetected: "đã phát hiện",
     agentNotInstalled: "{agent} chưa được cài trên máy này",
     agentHookInstalled: "Đã cài hook cho {agent}",
@@ -78,6 +77,13 @@ export const vi: TranslationKeys = {
     tmuxInstallFailed:
       "Không thể cài tmux tự động. Hãy cài thủ công:\n  macOS: brew install tmux\n  Linux: sudo apt install tmux",
     tmuxInstallSkipped: "Bỏ qua cài tmux — chat 2 chiều tắt, notification vẫn hoạt động",
+    tmuxWindowsInstallPrompt: "Cài tmux để sử dụng tính năng chat 2 chiều trên Windows?",
+    tmuxWindowsInstallFailed:
+      "Cài psmux thất bại. Truy cập https://github.com/marlocarlo/psmux/releases để tải thủ công.",
+    psmuxDownloading: "Đang tải psmux từ GitHub...",
+    psmuxDownloadFailed: "Tải psmux từ GitHub thất bại",
+    tmuxWindowsPathRefreshHint:
+      "Để dùng tmux, hãy tắt terminal hoặc VS Code hiện tại rồi mở lại để PATH được cập nhật.",
     addProjectPrompt: "Thêm project để tạo session agent?",
     addAnotherProject: "Thêm project khác?",
     projectAdded: 'Đã thêm "{name}" → {path}',
@@ -111,6 +117,16 @@ export const vi: TranslationKeys = {
     slackChannelNotMember:
       "Bot chưa được invite vào channel. Hãy gõ /invite @{name} trong channel trước",
     slackChannelVerified: "✓ Bot có thể gửi tin vào channel này",
+    tunnelMessage: "Nhà cung cấp tunnel (phơi server local ra internet)",
+    tunnelCustomUrlMessage: "Nhập URL HTTPS công khai",
+    tunnelCustomUrlPlaceholder: "https://your-domain.com",
+    ngrokAuthtokenMessage:
+      "Nhập ngrok authtoken (lấy tại https://dashboard.ngrok.com/get-started/your-authtoken)",
+    ngrokAuthtokenPlaceholder: "2abc...xyz",
+    ngrokAuthtokenRequired: "ngrok authtoken là bắt buộc",
+    ngrokVerifying: "Đang xác minh ngrok authtoken…",
+    ngrokVerified: "Xác minh ngrok authtoken thành công",
+    ngrokVerifyFailed: "Xác minh ngrok authtoken thất bại — kiểm tra lại token",
   },
 
   uninstall: {
@@ -162,6 +178,7 @@ export const vi: TranslationKeys = {
     cmdHelp: "  help        Hiện hướng dẫn này",
     cmdProject: "  project     Quản lý project đã đăng ký",
     cmdChannel: "  channel     Chuyển kênh thông báo (telegram/discord/slack)",
+    cmdBug: "  bug         Báo lỗi (thu thập thông tin chẩn đoán + log)",
     docs: "docs → https://github.com/kaida-palooza/ccpoke",
   },
 
@@ -188,6 +205,15 @@ export const vi: TranslationKeys = {
     retrying: "tunnel thử lại {attempt}/{max} sau {seconds}s...",
     attemptFailed: "tunnel lần {attempt} thất bại: {error}",
     autoRestart: "tunnel thoát bất ngờ, đang khởi động lại...",
+    disabled: "tunnel đã tắt",
+    usingProvider: "đang dùng tunnel: {provider}",
+    invalidTunnelType: "loại tunnel không hợp lệ: {type}",
+    customUrlMustBeHttps: "URL tùy chỉnh phải dùng HTTPS",
+    customUrlInvalid: "URL tùy chỉnh phải bắt đầu bằng https://",
+    ngrokAuthtokenRequired: "ngrok authtoken là bắt buộc",
+    ngrokNoUrl: "ngrok đã kết nối nhưng không trả về URL",
+    ngrokNoAutoRestart: "ngrok không hỗ trợ tự khởi động lại — khởi động lại ccpoke nếu tunnel mất",
+    ngrokCloseFailed: "đóng ngrok listener thất bại",
   },
 
   config: {
@@ -219,7 +245,7 @@ export const vi: TranslationKeys = {
   },
   tmux: {
     notAvailable: "Chưa cài tmux — chat 2 chiều tắt, notification vẫn hoạt động",
-    scanComplete: "tmux: tìm thấy {count} Claude Code session(s)",
+    scanComplete: "tmux: tìm thấy {count} session(s)",
     sessionRegistered: "Đã đăng ký session: {sessionId} → {target} ({project})",
     sessionDiscovered: "Phát hiện session: {target} ({project})",
     sessionLost: "Mất session: {target} ({project})",
@@ -231,11 +257,20 @@ export const vi: TranslationKeys = {
   chat: {
     placeholder: "Nhắn cho Claude...",
     replyHint: "Nhập tin nhắn bên dưới ↓",
+    directMessageHint:
+      "Không thể nhắn trực tiếp. Hãy dùng nút 💬 Chat trên thông báo hoặc trong /sessions.",
     sessionExpired: "Session đã hết hạn hoặc đóng",
     sessionNotFound: "Không tìm thấy session",
     tmuxDead: "tmux session đã ngắt kết nối",
+    paneDead: "Pane không còn tồn tại",
+    noAgent: "Không có agent nào chạy trong pane",
+    sentToShell: "📩 Đã gửi vào shell (agent chưa chạy) → {project}",
+    agentStarting: "Agent đang khởi động, vui lòng đợi...",
+    agentNotRunning: "Agent không chạy",
     sent: "📩 Đã gửi → {project}",
     busy: "⏳ Claude đang bận — thử lại sau",
+    cancelButton: "Hủy",
+    cancelled: "Đã hủy",
   },
   sessions: {
     title: "Phiên hoạt động",
@@ -282,6 +317,7 @@ export const vi: TranslationKeys = {
   },
   permissionRequest: {
     title: "Yêu cầu quyền",
+    planTitle: "Phê duyệt plan",
     allow: "Cho phép",
     deny: "Từ chối",
     allowed: "Đã cho phép: {tool} → {summary}",
@@ -289,6 +325,7 @@ export const vi: TranslationKeys = {
     sending: "Đang gửi...",
     sessionExpired: "Phiên đã hết hạn",
     injectionFailed: "Gửi thất bại. Thử trên terminal.",
+    planApproved: "Plan đã duyệt: {option}",
   },
   projectCmd: {
     intro: "📁 Quản lý Project",
@@ -320,5 +357,18 @@ export const vi: TranslationKeys = {
     cancelled: "Đã hủy.",
     notConfigured: '"{channel}" chưa được cấu hình.',
     configureNow: "Cấu hình {channel} ngay?",
+  },
+  bug: {
+    intro: "🐛 ccpoke báo lỗi",
+    descriptionPrompt: "Mô tả ngắn gọn lỗi gặp phải",
+    descriptionPlaceholder: "vd: notification ngừng hoạt động sau khi cập nhật",
+    cancelled: "Đã hủy báo lỗi.",
+    collecting: "Đang thu thập thông tin chẩn đoán...",
+    saved: "Đã lưu báo cáo → {path}",
+    openingFolder: "Đang mở vị trí file...",
+    issueLink: "Mở link này để tạo GitHub issue:",
+    attachHint: "📎 Hãy đính kèm file bug-report .txt bên dưới",
+    instructions: "Xong!\n\n  1. Mở link GitHub ở trên\n  2. Kéo file .txt vào issue\n  3. Gửi",
+    noLogFile: "Không tìm thấy log tại {path} — chỉ có thông tin chẩn đoán",
   },
 };

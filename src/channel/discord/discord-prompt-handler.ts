@@ -11,12 +11,12 @@ import {
 
 import type { NotificationEvent } from "../../agent/agent-handler.js";
 import type { AgentRegistry } from "../../agent/agent-registry.js";
-import { SessionState, type SessionMap } from "../../tmux/session-map.js";
+import { PaneState, type PaneRegistry } from "../../tmux/pane-registry.js";
 import type { TmuxBridge } from "../../tmux/tmux-bridge.js";
-import { log, logDebug } from "../../utils/log.js";
+import { logger } from "../../utils/log.js";
 
 interface PendingPrompt {
-  sessionId: string;
+  paneId: string;
   createdAt: number;
 }
 
@@ -29,11 +29,11 @@ export class DiscordPromptHandler {
   private pending = new Map<string, PendingPrompt>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  onElicitationSent?: (messageId: string, sessionId: string, project: string) => void;
+  onElicitationSent?: (messageId: string, paneId: string, project: string) => void;
 
   constructor(
     private getChannel: () => DMChannel | TextChannel | null,
-    private sessionMap: SessionMap,
+    private paneRegistry: PaneRegistry,
     private tmuxBridge: TmuxBridge,
     private registry: AgentRegistry
   ) {}
@@ -47,14 +47,12 @@ export class DiscordPromptHandler {
     }
   }
 
-  injectElicitationResponse(sessionId: string, text: string): boolean {
-    const session = this.sessionMap.getBySessionId(sessionId);
-    if (!session) return false;
-    if (!this.pending.has(sessionId)) return false;
+  injectElicitationResponse(paneId: string, text: string): boolean {
+    const pane = this.paneRegistry.getByPaneId(paneId);
+    if (!pane) return false;
+    if (!this.pending.has(paneId)) return false;
 
-    log(
-      `[Discord:Prompt:inject] sessionId=${sessionId} tmuxTarget=${session.tmuxTarget} text="${text.slice(0, 50)}"`
-    );
+    logger.info(`[Discord:Prompt:inject] paneId=${paneId} text="${text.slice(0, 50)}"`);
 
     const trimmed = text.trim();
     if (trimmed.length === 0) return false;
@@ -62,29 +60,29 @@ export class DiscordPromptHandler {
     const safeText =
       trimmed.length > MAX_RESPONSE_LENGTH ? trimmed.slice(0, MAX_RESPONSE_LENGTH) : trimmed;
 
-    const submitKeys = this.registry.resolve(session.agent)!.submitKeys;
+    const submitKeys = this.registry.resolve(pane.agent)!.submitKeys;
 
     try {
-      this.tmuxBridge.sendKeys(session.tmuxTarget, safeText, submitKeys);
+      this.tmuxBridge.sendKeys(pane.paneId, safeText, submitKeys);
     } catch {
       return false;
     }
 
-    this.sessionMap.updateState(sessionId, SessionState.Busy);
-    this.sessionMap.touch(sessionId);
-    this.clearPending(sessionId);
+    this.paneRegistry.updateState(paneId, PaneState.Busy);
+    this.paneRegistry.touch(paneId);
+    this.clearPending(paneId);
     return true;
   }
 
-  async handleElicitReplyButton(interaction: ButtonInteraction, sessionId: string): Promise<void> {
-    const session = this.sessionMap.getBySessionId(sessionId);
-    if (!session) {
+  async handleElicitReplyButton(interaction: ButtonInteraction, paneId: string): Promise<void> {
+    const pane = this.paneRegistry.getByPaneId(paneId);
+    if (!pane) {
       await interaction.reply({ content: "Session expired.", ephemeral: true });
       return;
     }
 
     await interaction.reply({
-      content: `Reply for **${session.project}**: send your message as a DM`,
+      content: `Reply for **${pane.project}**: send your message as a DM`,
       ephemeral: true,
     });
   }
@@ -100,7 +98,8 @@ export class DiscordPromptHandler {
     event: NotificationEvent
   ): Promise<void> {
     const title = event.title ? `❓ ${event.title}` : "❓ Input Required";
-    const project = this.sessionMap.getBySessionId(event.sessionId)?.project;
+    const paneId = event.paneId ?? "";
+    const project = paneId ? this.paneRegistry.getByPaneId(paneId)?.project : undefined;
 
     const embed = new EmbedBuilder()
       .setColor(EMBED_COLOR)
@@ -114,7 +113,7 @@ export class DiscordPromptHandler {
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId(`elicit:${event.sessionId}`)
+        .setCustomId(`elicit:${paneId}`)
         .setLabel("Reply")
         .setStyle(ButtonStyle.Primary)
         .setEmoji("💬")
@@ -125,32 +124,32 @@ export class DiscordPromptHandler {
       .catch(() => null as Message | null);
 
     if (sent) {
-      this.setPending(event.sessionId);
-      this.onElicitationSent?.(sent.id, event.sessionId, project ?? "");
-      logDebug(`[Discord:Prompt] elicitation sent msgId=${sent.id} sessionId=${event.sessionId}`);
+      this.setPending(paneId);
+      this.onElicitationSent?.(sent.id, paneId, project ?? "");
+      logger.debug(`[Discord:Prompt] elicitation sent msgId=${sent.id} paneId=${paneId}`);
     }
   }
 
-  private setPending(sessionId: string): void {
-    if (this.pending.size >= MAX_PENDING && !this.pending.has(sessionId)) {
+  private setPending(paneId: string): void {
+    if (this.pending.size >= MAX_PENDING && !this.pending.has(paneId)) {
       const oldest = [...this.pending.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
       if (oldest) this.clearPending(oldest[0]);
     }
 
-    this.clearPending(sessionId);
-    this.pending.set(sessionId, { sessionId, createdAt: Date.now() });
+    this.clearPending(paneId);
+    this.pending.set(paneId, { paneId, createdAt: Date.now() });
 
     const timer = setTimeout(() => {
-      this.pending.delete(sessionId);
-      this.timers.delete(sessionId);
+      this.pending.delete(paneId);
+      this.timers.delete(paneId);
     }, PROMPT_EXPIRE_MS);
-    this.timers.set(sessionId, timer);
+    this.timers.set(paneId, timer);
   }
 
-  private clearPending(sessionId: string): void {
-    this.pending.delete(sessionId);
-    const timer = this.timers.get(sessionId);
+  private clearPending(paneId: string): void {
+    this.pending.delete(paneId);
+    const timer = this.timers.get(paneId);
     if (timer) clearTimeout(timer);
-    this.timers.delete(sessionId);
+    this.timers.delete(paneId);
   }
 }

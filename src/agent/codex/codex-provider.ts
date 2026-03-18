@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 
 import { collectGitChanges } from "../../utils/git-collector.js";
-import { logDebug } from "../../utils/log.js";
+import { logger } from "../../utils/log.js";
 import { paths } from "../../utils/paths.js";
 import {
   AGENT_DISPLAY_NAMES,
@@ -9,7 +9,7 @@ import {
   type AgentEventResult,
   type AgentProvider,
 } from "../types.js";
-import { CodexInstaller } from "./codex-installer.js";
+import { codexInstaller } from "./codex-installer.js";
 import {
   extractProjectName,
   isValidNotifyEvent,
@@ -30,19 +30,19 @@ export class CodexProvider implements AgentProvider {
   }
 
   isHookInstalled(): boolean {
-    return CodexInstaller.isInstalled();
+    return codexInstaller.isInstalled();
   }
 
-  installHook(port: number, secret: string): void {
-    CodexInstaller.install(port, secret);
+  installHook(): void {
+    codexInstaller.install();
   }
 
   uninstallHook(): void {
-    CodexInstaller.uninstall();
+    codexInstaller.uninstall();
   }
 
   verifyIntegrity(): { complete: boolean; missing: string[] } {
-    return CodexInstaller.verifyIntegrity();
+    return codexInstaller.verifyIntegrity();
   }
 
   parseEvent(raw: unknown): AgentEventResult {
@@ -51,7 +51,7 @@ export class CodexProvider implements AgentProvider {
     }
 
     const event = parseNotifyEvent(raw);
-    logDebug(`[Codex:raw] threadId=${event.threadId} cwd=${event.cwd}`);
+    logger.debug(`[Codex:raw] threadId=${event.threadId} cwd=${event.cwd}`);
 
     let rollout = { model: "" };
     try {
@@ -62,7 +62,7 @@ export class CodexProvider implements AgentProvider {
 
     const gitChanges = event.cwd ? collectGitChanges(event.cwd) : [];
     const obj = raw as Record<string, unknown>;
-    const tmuxTarget = typeof obj.tmux_target === "string" ? obj.tmux_target : undefined;
+    const paneId = typeof obj.pane_id === "string" ? obj.pane_id : undefined;
 
     return {
       projectName: extractProjectName(event.cwd),
@@ -71,14 +71,14 @@ export class CodexProvider implements AgentProvider {
       model: rollout.model,
       agentSessionId: event.threadId || undefined,
       cwd: event.cwd,
-      tmuxTarget,
+      paneId,
     };
   }
 
   private createFallbackResult(raw: unknown): AgentEventResult {
     const obj = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
     const cwd = typeof obj.cwd === "string" ? obj.cwd : "";
-    const tmuxTarget = typeof obj.tmux_target === "string" ? obj.tmux_target : undefined;
+    const paneId = typeof obj.pane_id === "string" ? obj.pane_id : undefined;
 
     return {
       projectName: cwd ? extractProjectName(cwd) : "unknown",
@@ -86,7 +86,7 @@ export class CodexProvider implements AgentProvider {
       gitChanges: cwd ? collectGitChanges(cwd) : [],
       model: "",
       cwd,
-      tmuxTarget,
+      paneId,
     };
   }
 }

@@ -13,25 +13,34 @@ import {
 
 import { AGENT_DISPLAY_NAMES, AgentName } from "../../agent/types.js";
 import { ConfigManager } from "../../config-manager.js";
-import type { SessionMap } from "../../tmux/session-map.js";
-import type { SessionStateManager } from "../../tmux/session-state.js";
+import { PaneState, type PaneRegistry } from "../../tmux/pane-registry.js";
+import type { PaneStateManager } from "../../tmux/pane-state-manager.js";
 import type { TmuxBridge } from "../../tmux/tmux-bridge.js";
-import { log, logError } from "../../utils/log.js";
-import { autoTrustWorkspace, launchAgent } from "./discord-agent-launcher.js";
+import { isPaneAlive, queryPanePid } from "../../tmux/tmux-scanner.js";
+import { logger } from "../../utils/log.js";
+import { autoAcceptStartupPrompts, launchAgent } from "./discord-agent-launcher.js";
 
-export class DiscordSessionCommandHandler {
+function extractTmuxTarget(suffix: string): string {
+  const lastColon = suffix.lastIndexOf(":");
+  if (lastColon === -1) return suffix;
+  const maybePid = suffix.slice(lastColon + 1);
+  if (/^\d+$/.test(maybePid)) return suffix.slice(0, lastColon);
+  return suffix;
+}
+
+export class DiscordPaneCommandHandler {
   constructor(
-    private sessionMap: SessionMap,
+    private paneRegistry: PaneRegistry,
     private tmuxBridge: TmuxBridge | null,
-    private stateManager: SessionStateManager | null,
+    private paneStateManager: PaneStateManager | null,
     private activeIntervals: ReturnType<typeof setInterval>[]
   ) {}
 
   async handleSessionsCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (this.tmuxBridge) this.sessionMap.refreshFromTmux(this.tmuxBridge);
+    if (this.tmuxBridge) this.paneRegistry.refreshFromTmux(this.tmuxBridge);
 
-    const sessions = this.sessionMap.getAllActive();
-    if (sessions.length === 0) {
+    const panes = this.paneRegistry.getAllActive();
+    if (panes.length === 0) {
       await interaction.reply({ content: "No active sessions.", ephemeral: false });
       return;
     }
@@ -40,25 +49,25 @@ export class DiscordSessionCommandHandler {
       .setTitle("Active Sessions")
       .setColor(0x00b894)
       .setDescription(
-        sessions
+        panes
           .slice(0, 20)
-          .map((s) => `**${s.project}** · ${s.state}`)
+          .map((p) => `**${p.project}** · ${p.state}`)
           .join("\n")
       )
       .setTimestamp();
 
     const rows: ActionRowBuilder<ButtonBuilder>[] = [];
-    for (const s of sessions.slice(0, 5)) {
+    for (const p of panes.slice(0, 5)) {
+      const pid = queryPanePid(p.paneId) ?? "";
+      const chatId = pid ? `session_chat:${p.paneId}:${pid}` : `session_chat:${p.paneId}`;
+      const closeId = pid ? `session_close:${p.paneId}:${pid}` : `session_close:${p.paneId}`;
       rows.push(
         new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
-            .setCustomId(`session_chat:${s.sessionId}`)
-            .setLabel(`💬 ${s.project.slice(0, 30)}`)
+            .setCustomId(chatId)
+            .setLabel(`💬 ${p.project.slice(0, 30)}`)
             .setStyle(ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId(`session_close:${s.sessionId}`)
-            .setLabel("Close")
-            .setStyle(ButtonStyle.Danger)
+          new ButtonBuilder().setCustomId(closeId).setLabel("Close").setStyle(ButtonStyle.Danger)
         )
       );
     }
@@ -95,78 +104,89 @@ export class DiscordSessionCommandHandler {
     await interaction.reply({ embeds: [embed], components: rows });
   }
 
-  async handleSessionChatButton(interaction: ButtonInteraction, sessionId: string): Promise<void> {
-    const session = this.sessionMap.getBySessionId(sessionId);
-    if (!session) {
+  async handleSessionChatButton(
+    interaction: ButtonInteraction,
+    customIdSuffix: string
+  ): Promise<void> {
+    const paneId = extractTmuxTarget(customIdSuffix);
+    const pane = this.paneRegistry.getByPaneId(paneId);
+    if (!pane) {
       await interaction.reply({ content: "Session not found.", ephemeral: true });
       return;
     }
 
     const modal = new ModalBuilder()
-      .setCustomId(`chat_modal:${sessionId}`)
-      .setTitle(`Chat → ${session.project.slice(0, 40)}`);
+      .setCustomId(`chat_modal:${paneId}`)
+      .setTitle(`Chat → ${pane.project.slice(0, 40)}`);
 
     const input = new TextInputBuilder()
       .setCustomId("chat_message")
       .setLabel("Message")
       .setStyle(TextInputStyle.Paragraph)
       .setRequired(true)
-      .setPlaceholder(`Send to ${session.project}...`);
+      .setPlaceholder(`Send to ${pane.project}...`);
 
     modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
     await interaction.showModal(modal);
   }
 
-  async handleChatModalSubmit(
-    interaction: ModalSubmitInteraction,
-    sessionId: string
-  ): Promise<void> {
+  async handleChatModalSubmit(interaction: ModalSubmitInteraction, paneId: string): Promise<void> {
     const text = interaction.fields.getTextInputValue("chat_message").trim();
     if (!text) {
       await interaction.reply({ content: "Empty message.", ephemeral: true });
       return;
     }
 
-    const session = this.sessionMap.getBySessionId(sessionId);
-    if (!session) {
+    const pane = this.paneRegistry.getByPaneId(paneId);
+    if (!pane) {
       await interaction.reply({ content: "Session not found.", ephemeral: true });
       return;
     }
 
-    if (!this.stateManager) {
+    if (!this.paneStateManager) {
       await interaction.reply({ content: "Two-way chat not available.", ephemeral: true });
       return;
     }
 
-    const result = this.stateManager.injectMessage(sessionId, text);
+    const result = this.paneStateManager.injectMessage(paneId, text);
     if ("sent" in result) {
-      await interaction.reply({ content: `Sent to **${session.project}**` });
+      await interaction.reply({ content: `Sent to **${pane.project}**` });
+    } else if ("sentToShell" in result) {
+      await interaction.reply({ content: `Sent to shell (no agent) → **${pane.project}**` });
     } else if ("busy" in result) {
       await interaction.reply({ content: "Agent is busy.", ephemeral: true });
+    } else if ("noAgent" in result) {
+      await interaction.reply({ content: "No agent running in pane.", ephemeral: true });
     } else {
       await interaction.reply({ content: "Session not found or expired.", ephemeral: true });
     }
   }
 
-  async handleSessionCloseButton(interaction: ButtonInteraction, sessionId: string): Promise<void> {
-    const session = this.sessionMap.getBySessionId(sessionId);
-    if (!session) {
+  async handleSessionCloseButton(
+    interaction: ButtonInteraction,
+    customIdSuffix: string
+  ): Promise<void> {
+    const paneId = extractTmuxTarget(customIdSuffix);
+    const pane = this.paneRegistry.getByPaneId(paneId);
+    if (!pane) {
       await interaction.reply({ content: "Session not found.", ephemeral: true });
       return;
     }
 
-    if (this.tmuxBridge && session.tmuxTarget) {
+    if (this.tmuxBridge && pane.paneId && isPaneAlive(pane.paneId)) {
       try {
-        this.tmuxBridge.killPane(session.tmuxTarget);
-      } catch {
-        /* pane may already be dead */
+        this.tmuxBridge.killPane(pane.paneId);
+      } catch (e: unknown) {
+        logger.debug(
+          `[Discord:close] killPane failed: ${e instanceof Error ? e.message : String(e)}`
+        );
       }
     }
 
-    this.sessionMap.unregister(sessionId);
-    this.sessionMap.save();
-    log(`[Discord] closed session ${sessionId} (${session.project})`);
-    await interaction.reply({ content: `Closed session for **${session.project}**` });
+    this.paneRegistry.unregister(paneId);
+    this.paneRegistry.save();
+    logger.info(`[Discord] closed session ${paneId} (${pane.project})`);
+    await interaction.reply({ content: `Closed session for **${pane.project}**` });
   }
 
   async handleProjectButton(interaction: ButtonInteraction, idx: number): Promise<void> {
@@ -228,12 +248,19 @@ export class DiscordSessionCommandHandler {
     if (!this.tmuxBridge) return;
 
     try {
-      const { paneTarget, needsTrust } = launchAgent(this.tmuxBridge, project.path, agentKey);
+      const {
+        paneId,
+        panePid: _panePid,
+        needsTrust,
+      } = launchAgent(this.tmuxBridge, project.path, agentKey);
+
+      this.paneRegistry.register(paneId, project.name, project.path, "", agentKey as AgentName);
+      this.paneRegistry.updateState(paneId, PaneState.Launching);
 
       if (needsTrust) {
-        autoTrustWorkspace(
+        autoAcceptStartupPrompts(
           this.tmuxBridge,
-          paneTarget,
+          paneId,
           agentKey,
           (iv) => this.activeIntervals.push(iv),
           (iv) => {
@@ -243,10 +270,10 @@ export class DiscordSessionCommandHandler {
         );
       }
 
-      log(`[Discord] started ${agentKey} in ${paneTarget} for ${project.name}`);
+      logger.info(`[Discord] started ${agentKey} in ${paneId} for ${project.name}`);
       await interaction.reply({ content: `Started **${agentKey}** for **${project.name}**` });
     } catch (err) {
-      logError(`[Discord] failed to start agent for ${project.name}`, err);
+      logger.error({ err }, `[Discord] failed to start agent for ${project.name}`);
       await interaction.reply({ content: `Failed to start agent for **${project.name}**` });
     }
   }

@@ -1,33 +1,12 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 
-import { ApiRoute, isWindows } from "../../utils/constants.js";
-import { getPackageVersion, paths } from "../../utils/paths.js";
-import { AgentName } from "../types.js";
+import { HookScriptCopier } from "../../hooks/hook-script-copier.js";
+import { writeTextFile } from "../../utils/atomic-file.js";
+import { CCPOKE_MARKER, isWindows } from "../../utils/constants.js";
+import { paths, toPosixPath } from "../../utils/paths.js";
+import type { AgentInstaller, IntegrityResult } from "../types.js";
 
-const VERSION_HEADER_PATTERN = /^#\s*ccpoke-version:\s*(\S+)/;
 const NOTIFY_LINE_PATTERN = /^notify\s*=\s*\[([\s\S]*?)\]/m;
-const CCPOKE_MARKER = "ccpoke";
-
-function readScriptVersion(scriptPath: string): string | null {
-  try {
-    const lines = readFileSync(scriptPath, "utf-8").split("\n");
-    for (const line of lines.slice(0, 3)) {
-      const match = line.match(VERSION_HEADER_PATTERN);
-      if (match) return match[1] ?? null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 function readNotifyArray(content: string): string[] {
   const match = content.match(NOTIFY_LINE_PATTERN);
@@ -39,11 +18,11 @@ function readNotifyArray(content: string): string[] {
 }
 
 function writeNotifyLine(entries: string[]): string {
-  const quoted = entries.map((e) => `'${e}'`).join(", ");
+  const quoted = entries.map((e) => `"${e}"`).join(", ");
   return `notify = [${quoted}]`;
 }
 
-function readConfigFile(): string {
+function readConfig(): string {
   try {
     return readFileSync(paths.codexConfigToml, "utf-8");
   } catch {
@@ -51,28 +30,50 @@ function readConfigFile(): string {
   }
 }
 
-function writeConfigFile(content: string): void {
-  mkdirSync(dirname(paths.codexConfigToml), { recursive: true });
-  const tmp = `${paths.codexConfigToml}.tmp`;
-  writeFileSync(tmp, content);
-  renameSync(tmp, paths.codexConfigToml);
-}
-
-export class CodexInstaller {
-  static isInstalled(): boolean {
+export const codexInstaller = {
+  isInstalled(): boolean {
     try {
-      if (!existsSync(paths.codexConfigToml)) return false;
-      const entries = readNotifyArray(readConfigFile());
+      if (!existsSync(paths.codexConfigToml)) {
+        return false;
+      }
+      const entries = readNotifyArray(readConfig());
       return entries.some((e) => e.includes(CCPOKE_MARKER));
     } catch {
       return false;
     }
-  }
+  },
 
-  static install(hookPort: number, hookSecret: string): void {
-    let content = readConfigFile();
-    const entries = readNotifyArray(content).filter((e) => !e.includes(CCPOKE_MARKER));
-    entries.push(paths.codexHookScript);
+  verifyIntegrity(): IntegrityResult {
+    const missing: string[] = [];
+
+    try {
+      const entries = readNotifyArray(readConfig());
+      if (!entries.some((e) => e.includes(CCPOKE_MARKER)))
+        missing.push("notify entry in config.toml");
+      else if (!entries.includes(toPosixPath(paths.codexHookScript)))
+        missing.push("wrong notify script path in config.toml");
+    } catch {
+      missing.push("config.toml");
+    }
+
+    if (!existsSync(paths.codexHookScript)) {
+      missing.push("notify script file");
+    } else {
+      const ext = isWindows() ? ".cmd" : ".sh";
+      if (HookScriptCopier.needsCopy(`codex-notify${ext}`, paths.codexHookScript)) {
+        missing.push("outdated notify script");
+      }
+    }
+
+    return { complete: missing.length === 0, missing };
+  },
+
+  install(): void {
+    codexInstaller.uninstall();
+
+    let content = readConfig();
+    const entries = readNotifyArray(content);
+    entries.push(toPosixPath(paths.codexHookScript));
 
     const newLine = writeNotifyLine(entries);
     if (NOTIFY_LINE_PATTERN.test(content)) {
@@ -87,83 +88,19 @@ export class CodexInstaller {
       }
     }
 
-    writeConfigFile(content);
-    CodexInstaller.writeScript(hookPort, hookSecret);
-  }
+    writeTextFile(paths.codexConfigToml, content);
 
-  static uninstall(): void {
-    CodexInstaller.removeFromConfig();
-    CodexInstaller.removeScript();
-  }
+    HookScriptCopier.copyLib();
+    const ext = isWindows() ? ".cmd" : ".sh";
+    HookScriptCopier.copy(`codex-notify${ext}`, paths.codexHookScript);
+  },
 
-  static verifyIntegrity(): { complete: boolean; missing: string[] } {
-    const missing: string[] = [];
-
-    try {
-      const entries = readNotifyArray(readConfigFile());
-      if (!entries.some((e) => e.includes(CCPOKE_MARKER)))
-        missing.push("notify entry in config.toml");
-      else if (!entries.includes(paths.codexHookScript))
-        missing.push("wrong notify script path in config.toml");
-    } catch {
-      missing.push("config.toml");
-    }
-
-    if (!existsSync(paths.codexHookScript)) {
-      missing.push("notify script file");
-    } else if (readScriptVersion(paths.codexHookScript) !== getPackageVersion()) {
-      missing.push("outdated notify script");
-    }
-
-    return { complete: missing.length === 0, missing };
-  }
-
-  private static writeScript(hookPort: number, hookSecret: string): void {
-    mkdirSync(paths.hooksDir, { recursive: true });
-
-    const version = getPackageVersion();
-    const agentParam = `?agent=${AgentName.Codex}`;
-
-    if (isWindows()) {
-      const script = `@REM ccpoke-version: ${version}\n@echo off\necho %~1 | curl -s -X POST http://localhost:${hookPort}${ApiRoute.HookStop}${agentParam} -H "Content-Type: application/json" -H "X-CCPoke-Secret: ${hookSecret}" --data-binary "%~1" > nul 2>&1\n`;
-      writeFileSync(paths.codexHookScript, script, { mode: 0o644 });
+  uninstall(): void {
+    if (!existsSync(paths.codexConfigToml)) {
       return;
     }
 
-    const script = `#!/bin/bash
-# ccpoke-version: ${version}
-JSON="$1"
-[ -z "$JSON" ] && exit 0
-TMUX_TARGET=""
-if [ -n "$TMUX_PANE" ]; then
-  TMUX_TARGET=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")
-elif [ -n "$TMUX" ]; then
-  TMUX_TARGET=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")
-fi
-if [ -n "$TMUX_TARGET" ] && echo "$TMUX_TARGET" | grep -qE '^[a-zA-Z0-9_.:/@ -]+$'; then
-  JSON=$(echo "$JSON" | sed 's/}$/,"tmux_target":"'"$TMUX_TARGET"'"}/')
-fi
-echo "$JSON" | curl -s -X POST "http://localhost:${hookPort}${ApiRoute.HookStop}${agentParam}" \\
-  -H "Content-Type: application/json" \\
-  -H "X-CCPoke-Secret: ${hookSecret}" \\
-  --data-binary @- > /dev/null 2>&1 || true
-`;
-
-    writeFileSync(paths.codexHookScript, script, { mode: 0o700 });
-  }
-
-  private static removeScript(): void {
-    try {
-      unlinkSync(paths.codexHookScript);
-    } catch {
-      /* noop */
-    }
-  }
-
-  private static removeFromConfig(): void {
-    if (!existsSync(paths.codexConfigToml)) return;
-
-    let content = readConfigFile();
+    let content = readConfig();
     const entries = readNotifyArray(content).filter((e) => !e.includes(CCPOKE_MARKER));
 
     if (entries.length === 0) {
@@ -172,6 +109,8 @@ echo "$JSON" | curl -s -X POST "http://localhost:${hookPort}${ApiRoute.HookStop}
       content = content.replace(NOTIFY_LINE_PATTERN, writeNotifyLine(entries));
     }
 
-    writeConfigFile(content);
-  }
-}
+    writeTextFile(paths.codexConfigToml, content);
+
+    HookScriptCopier.remove(paths.codexHookScript);
+  },
+} satisfies AgentInstaller;

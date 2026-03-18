@@ -160,12 +160,15 @@ After first setup, ccpoke creates:
 **Example:**
 ```json
 {
+  "channel": "telegram",
   "telegram_bot_token": "123456:ABC-xxx",
   "user_id": 9876543210,
   "hook_port": 9377,
   "hook_secret": "abc123def456ghi789jkl012mno345pqr",
+  "tunnel": "cloudflare",
+  "ngrok_authtoken": "",
+  "locale": "en",
   "agents": ["claude-code", "codex", "cursor"],
-  "language": "en",
   "projects": ["/Users/you/projects/my-app"]
 }
 ```
@@ -232,7 +235,9 @@ ccpoke setup
 3. Scan QR or click link to connect
 4. Send `/start` in Telegram
 5. Select agents to monitor
-6. Setup completes
+6. Select tunnel provider (cloudflare/ngrok/custom URL/disabled)
+7. If ngrok: enter authtoken
+8. Setup completes
 
 **Total time:** ~1-2 minutes
 
@@ -241,12 +246,14 @@ ccpoke setup
 **Create** `~/.ccpoke/config.json`:
 ```json
 {
+  "channel": "telegram",
   "telegram_bot_token": "YOUR_TOKEN_HERE",
   "user_id": YOUR_USER_ID,
   "hook_port": 9377,
   "hook_secret": "generate-random-32-char-string",
+  "tunnel": "cloudflare",
   "agents": ["claude-code"],
-  "language": "en"
+  "locale": "en"
 }
 ```
 

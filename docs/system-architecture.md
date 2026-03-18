@@ -172,34 +172,66 @@ Auto-cleanup on timeout or explicit destroy()
 - Rate limiting (Telegram: 30 msg/sec)
 - Message editing (progress updates)
 
-### 3. Session Management
+### 3. Session Management (Pane-Centric)
 
-**Responsibility:** Track and manage tmux sessions across bot restart.
+**Responsibility:** Track and manage tmux sessions via pane targets (not session IDs).
 
 **Components:**
-- **SessionMap** — Registry of active sessions with LRU eviction
-- **SessionStateManager** — State machine for individual sessions
+- **SessionMap** — Registry of active panes, keyed by tmuxTarget (was sessionId)
+- **SessionStateManager** — State machine for individual pane sessions
 - **TmuxScanner** — Detects live tmux panes
-- **SessionResolver** — Links notifications to sessions
+- **ChatSessionResolver** — Links notifications to pane targets
+- **Callback Parser** — Encodes/decodes pane info in Telegram callbacks
 
-**Session Attributes:**
+**Callback Encoding (Pane-Centric):**
 ```typescript
-interface TmuxSession {
-  sessionId: string;           // Unique ID
-  tmuxTarget: string;          // tmux target (session:window)
-  agent: AgentName;            // Agent name (claude-code, cursor, codex)
+// Encode tmuxTarget + panePid into 64-byte callback data
+buildTargetCallback(prefix: string, tmuxTarget: string, panePid: string): string
+// Result: "chat:session:window.pane:1234" (e.g., "chat:0:1:1234")
+// Truncates tmuxTarget if needed to fit MAX_CALLBACK_BYTES
+
+// Decode callback data back to tmuxTarget + panePid
+parseTargetCallback(data: string, prefix: string): TargetCallback | null
+// Validates format and extracts { tmuxTarget, panePid }
+```
+
+**Pane Health & Process Queries:**
+```typescript
+// Get current PID of a pane (queries tmux list-panes)
+queryPanePid(target: string): string | undefined
+
+// Check if pane is alive and agent process is active
+checkPaneHealth(target: string, tree?: ProcessTree): PaneHealth
+// Returns: { paneExists, agentRunning, processName }
+```
+
+**SessionMap Key Change (from sessionId to tmuxTarget):**
+- **Old:** Keyed by generated UUID (sessionId)
+- **New:** Keyed by tmux target string (e.g., "0:1" for session 0, window 1, pane 0)
+- **Benefit:** Stable identity across restarts, no UUID generation needed
+
+**Session Attributes (Pane-Centric):**
+```typescript
+interface PaneMetadata {
+  tmuxTarget: string;          // Unique key: tmux target (session:window.pane)
   project: string;             // Project name (from path)
   cwd: string;                 // Working directory
   label: string;               // Display label
-  state: 'idle' | 'busy' | 'blocked' | 'unknown';  // Current state
+  state: 'idle' | 'busy' | 'blocked' | 'unknown' | 'launching';  // Current state
+  model: string;               // LLM model name
+  agent: AgentName;            // Agent name (claude-code, cursor, codex)
   lastActivity: Date;          // Last activity timestamp
 }
+
+// Exported alias for backward compatibility
+type TmuxSession = PaneMetadata;
 ```
 
 **Session States:**
 - **idle** — Session ready, no activity
 - **busy** — Agent processing response
 - **blocked** — Waiting for user input (elicitation_dialog hook)
+- **launching** — Agent session starting up
 - **unknown** — Unable to determine state
 
 **Resource Limits:**
@@ -207,22 +239,26 @@ interface TmuxSession {
 - **LRU Eviction:** When limit reached, oldest inactive session (by `lastActivity`) is evicted
 - **Persistence:** Sessions saved to `~/.ccpoke/sessions.json` on disk for recovery
 
-**Lifecycle:**
+**Lifecycle (Pane-Centric):**
 ```
-SessionStart Hook
+SessionStart Hook (provides tmuxTarget)
     ↓
-Register in SessionMap (memory + disk)
+Register in SessionMap by tmuxTarget (memory + disk)
+    ↓
+Query PanePid via queryPanePid() (current process ID)
     ↓
 Periodic 30s Scan (TmuxScanner)
     ├─ Detect new panes
+    ├─ Query panePid for each pane
+    ├─ Check pane health (via checkPaneHealth)
     ├─ Update last_activity
     └─ Prune stale (30min idle)
     ↓
-Persist to ~/.ccpoke/sessions.json
+Persist to ~/.ccpoke/sessions.json (tmuxTarget key)
     ↓
 Bot Restart: Load from disk
     ↓
-Reconcile with live tmux state
+Reconcile with live tmux state (re-query paneIds)
 ```
 
 ### 4. tmux Bridge
@@ -295,13 +331,17 @@ Detects agents by matching AGENT_PATTERNS:
    │  ├─ Extract last response
    │  ├─ Collect git changes
    │  └─ Return AgentEventResult
-   └─ Emit 'event' signal
+   ├─ Resolve tmux target via resolveTmuxTarget() (pane-centric)
+   ├─ Query panePid via queryPanePid(tmuxTarget)
+   └─ Emit 'event' signal with tmuxTarget + panePid
 
-5. SESSION RESOLVER
+5. SESSION RESOLVER (Pane-Centric)
    ├─ Extract project from transcript path
-   ├─ Query SessionMap
-   ├─ Find matching tmux session
-   └─ Attach session info to event
+   ├─ Query SessionMap by project name
+   ├─ Find matching tmux target (pane)
+   ├─ Query current panePid via queryPanePid()
+   ├─ Check pane health via checkPaneHealth()
+   └─ Attach tmuxTarget + panePid to NotificationData
 
 6. RESPONSE STORE
    ├─ Store response by session ID
@@ -313,12 +353,13 @@ Detects agents by matching AGENT_PATTERNS:
    │  ├─ Markdown → MarkdownV2
    │  ├─ Git diff summary
    │  ├─ Execution stats
-   │  └─ Session info
+   │  └─ Session info (tmuxTarget, agent, project)
    ├─ Check length
    ├─ If > 4096 chars: paginate
+   ├─ Encode callback: buildTargetCallback("chat", tmuxTarget, panePid)
    ├─ Send via Telegram API
    ├─ Store message ID
-   └─ Add inline buttons (Chat, View)
+   └─ Add inline buttons (Chat, View) with encoded callbacks
 
 8. USER ON PHONE 📱
    └─ Receives notification with:
@@ -347,15 +388,19 @@ Detects agents by matching AGENT_PATTERNS:
    └─ Emit 'reply_pending' event
 
 3. SESSION RESOLVER
-   ├─ Extract session from Telegram message
-   ├─ Query SessionMap
-   └─ Find tmux target
+   ├─ Extract session from Telegram callback
+   ├─ Parse callback via parseTargetCallback() → {tmuxTarget, panePid}
+   ├─ Check pane health via checkPaneHealth(tmuxTarget)
+   ├─ Query SessionMap by tmuxTarget
+   └─ Find pane metadata
 
 4. SESSION STATE MACHINE
+   ├─ Check pane health via checkPaneHealth(tmuxTarget)
+   ├─ Validate pane exists and agent process active
    ├─ Check session status
    ├─ Queue message if busy
    ├─ Transition to 'waiting_input'
-   └─ Inject via tmux
+   └─ Inject via tmux using target
 
 5. TMUX BRIDGE (send-keys)
    ├─ Send message text
@@ -393,21 +438,24 @@ Detects agents by matching AGENT_PATTERNS:
 2. NOTIFICATION HOOK ENDPOINT (/hook/notification)
    ├─ Validate secret header
    ├─ Parse notification event:
-   │  ├─ session_id
+   │  ├─ tmux_target (pane target, replaces session_id)
    │  ├─ notification_type (elicitation_dialog)
    │  ├─ title (optional)
    │  └─ message (the prompt)
    └─ Delegate to AgentHandler.handleNotification()
 
 3. AGENT HANDLER
-   ├─ Resolve session ID (map to tmux target)
+   ├─ Resolve tmux target (pane-centric)
+   ├─ Query panePid via queryPanePid(tmuxTarget)
    ├─ Call chatResolver.onNotificationBlock()
    │  └─ Update session state → 'blocked'
-   └─ Emit onNotification event
+   └─ Emit onNotification event with tmuxTarget + panePid
 
 4. TELEGRAM CHANNEL
    ├─ PromptHandler receives elicitation_dialog
    ├─ Format message with title + prompt
+   ├─ Query current panePid via queryPanePid(tmuxTarget)
+   ├─ Encode callback: buildTargetCallback("elicit", tmuxTarget, panePid)
    ├─ Send to Telegram with force_reply + selective markup
    └─ Track pending prompt (no TTL, cleaned on reply/shutdown/evict)
 
@@ -416,10 +464,12 @@ Detects agents by matching AGENT_PATTERNS:
    ├─ Types response
    └─ Sends reply
 
-6. TELEGRAM MESSAGE HANDLER
+6. TELEGRAM MESSAGE HANDLER (Pane-Centric)
    ├─ Detect reply to prompt message
+   ├─ Parse callback via parseTargetCallback() → {tmuxTarget, panePid}
+   ├─ Check pane health via checkPaneHealth(tmuxTarget)
    ├─ PromptHandler.injectElicitationResponse()
-   ├─ Validate session active and waiting
+   ├─ Validate pane exists and agent process active
    ├─ Send keys via tmux: text + Enter
    └─ Update session state → 'busy'
 
@@ -448,27 +498,32 @@ Detects agents by matching AGENT_PATTERNS:
    ├─ Load all sessions from SessionMap
    └─ Call formatSessionList()
 
-3. SESSION FORMATTER
+3. SESSION FORMATTER (Pane-Centric)
    ├─ Sort sessions by lastActivity (newest first)
    ├─ For each session:
    │  ├─ Get state emoji:
    │  │  ├─ 🟢 (green) = idle
    │  │  ├─ 🟡 (yellow) = busy
    │  │  ├─ 🔴 (red) = blocked
+   │  │  ├─ 🟣 (purple) = launching
    │  │  └─ ⚪ (white) = unknown
    │  ├─ Format label: "{emoji} {project} ({state})"
-   │  └─ Add "Chat" button (callback_data: chat:{sessionId})
+   │  ├─ Query current panePid via queryPanePid(tmuxTarget)
+   │  ├─ Encode callback: buildTargetCallback("session", tmuxTarget, panePid)
+   │  └─ Add "Chat" button with encoded callback
    └─ Return formatted message + inline keyboard
 
 4. TELEGRAM SEND
    ├─ Send message with MarkdownV2 formatting
    ├─ Include inline keyboard (50 buttons max)
-   └─ User taps "Chat" button
+   └─ User taps "Chat" button (callback_data decoded server-side)
 
-5. CALLBACK HANDLER
-   ├─ Parse callback_data: chat:{sessionId}
-   ├─ Open chat input for that session
-   └─ Messages sent to session receive handler
+5. CALLBACK HANDLER (Pane-Centric)
+   ├─ Parse callback_data: parseTargetCallback(data, "session")
+   ├─ Extract { tmuxTarget, panePid }
+   ├─ Check pane health via checkPaneHealth(tmuxTarget)
+   ├─ Open chat input for that pane
+   └─ Messages sent to pane receive handler
 ```
 
 ---
@@ -492,30 +547,31 @@ DETECTION PHASE
    ├─ Check session status
    └─ Create new session entries
 
-REGISTRATION PHASE
-├─ SessionMap.addSession()
+REGISTRATION PHASE (Pane-Centric)
+├─ SessionMap.register() — keyed by tmuxTarget
 │  ├─ Store in memory (_sessions map)
 │  ├─ Persist to ~/.ccpoke/sessions.json
 │  ├─ Emit 'session_started' event
-│  └─ Return session object
+│  └─ Return pane metadata
 │
 └─ Listeners notified:
    ├─ TelegramChannel (optional notification)
    ├─ Logger (activity record)
-   └─ ResponseStore (session context)
+   └─ ResponseStore (pane context)
 
-SYNCHRONIZATION PHASE (Periodic)
+SYNCHRONIZATION PHASE (Periodic, Pane-Centric)
 ├─ TmuxScanner.scan() — Every 30 seconds
-│  ├─ List live panes
-│  ├─ For each registered session:
+│  ├─ List live panes via tmux
+│  ├─ Query current panePid for each via queryPanePid()
+│  ├─ For each registered session (by tmuxTarget):
 │  │  ├─ Check if pane exists
-│  │  ├─ Get pane status
-│  │  ├─ Update last_activity
+│  │  ├─ Check pane health via checkPaneHealth()
+│  │  ├─ Update last_activity timestamp
 │  │  └─ Mark as 'alive'
 │  │
 │  └─ For new panes:
-│     ├─ Detect agent
-│     ├─ Auto-register if agent detected
+│     ├─ Detect agent via process tree matching
+│     ├─ Auto-register if agent detected (by tmuxTarget)
 │     └─ Emit 'new_session'
 
 CLEANUP PHASE
@@ -529,15 +585,17 @@ CLEANUP PHASE
    ├─ Emit 'session_ended'
    └─ Optional: Notify Telegram
 
-RESTART RECOVERY
+RESTART RECOVERY (Pane-Centric)
 ├─ Bot startup:
 │  ├─ Load ~/.ccpoke/sessions.json
-│  ├─ Validate required fields (sessionId, tmuxTarget, project)
+│  ├─ Validate required fields (tmuxTarget, project, agent)
 │  ├─ Validate date format (lastActivity timestamp)
 │  ├─ Skip invalid entries (corrupted or malformed)
-│  ├─ Populate SessionMap (memory)
-│  ├─ Reconcile with live tmux
-│  ├─ Mark lost sessions as 'stale'
+│  ├─ Populate SessionMap by tmuxTarget (memory)
+│  ├─ Reconcile with live tmux panes
+│  │  ├─ Query live panePids via queryPanePid()
+│  │  ├─ Check pane health via checkPaneHealth()
+│  │  └─ Mark lost panes as 'stale'
 │  └─ Resume monitoring
 ```
 
@@ -598,10 +656,13 @@ index.ts (Entry Point)
 ```
 ~/.ccpoke/
 ├── config.json           # User configuration
+│   ├─ channel (telegram|discord|slack)
 │   ├─ telegram_bot_token
 │   ├─ user_id
 │   ├─ hook_port (default: 9377)
 │   ├─ hook_secret
+│   ├─ tunnel (cloudflare|ngrok|https://...|false)
+│   ├─ ngrok_authtoken (optional, for ngrok provider)
 │   ├─ agents: ["claude-code", "cursor", "codex", "gemini-cli"]
 │   └─ projects: {...}
 │
@@ -706,11 +767,24 @@ server.listen(9377, '127.0.0.1', () => {
 - ✅ Local machine: `curl http://127.0.0.1:9377/`
 - ❌ Remote: `curl http://your-machine:9377/` — fails
 
-**Tunnel (Optional):**
-Users can optionally expose via Cloudflare Tunnel:
-```bash
-cloudflared tunnel run
+**Tunnel Provider (Optional):**
+
+The bot can expose its hook endpoint via tunnel provider, selectable during setup:
+
+- **cloudflare** (default) — Cloudflare Tunnel with auto-restart on failure
+- **ngrok** — ngrok tunnel with retry logic (requires `ngrok_authtoken`)
+- **custom URL** — User-provided HTTPS endpoint (e.g., custom reverse proxy)
+- **disabled** (false) — Localhost only, no tunnel
+
+**Configuration:**
+```json
+{
+  "tunnel": "cloudflare",
+  "ngrok_authtoken": ""  // Only for ngrok provider
+}
 ```
+
+Each provider implements `TunnelProvider` interface: `start(port)`, `stop()`, `getPublicUrl()`.
 
 ---
 

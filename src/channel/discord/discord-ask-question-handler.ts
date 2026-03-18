@@ -10,8 +10,10 @@ import {
 } from "discord.js";
 
 import type { AskUserQuestionEvent, AskUserQuestionItem } from "../../agent/agent-handler.js";
+import type { PaneRegistry } from "../../tmux/pane-registry.js";
 import type { TmuxBridge } from "../../tmux/tmux-bridge.js";
-import { log, logDebug, logError } from "../../utils/log.js";
+import { logger } from "../../utils/log.js";
+import { buildSessionLabel } from "../session-label.js";
 import { truncate } from "../summarize-tool.js";
 import {
   AskQuestionTuiInjector,
@@ -20,8 +22,7 @@ import {
 
 interface PendingQuestion {
   pendingId: number;
-  sessionId: string;
-  tmuxTarget: string;
+  paneId: string;
   questions: AskUserQuestionItem[];
   currentIndex: number;
   answers: Map<number, InjectionAnswer>;
@@ -43,20 +44,19 @@ export class DiscordAskQuestionHandler {
 
   constructor(
     private getChannel: () => DMChannel | TextChannel | null,
-    tmuxBridge: TmuxBridge
+    tmuxBridge: TmuxBridge,
+    private paneRegistry: PaneRegistry | null
   ) {
     this.injector = new AskQuestionTuiInjector(tmuxBridge);
   }
 
   async forwardQuestion(event: AskUserQuestionEvent): Promise<void> {
     const channel = this.getChannel();
-    if (!channel || !event.tmuxTarget || event.questions.length === 0) return;
+    if (!channel || !event.paneId || event.questions.length === 0) return;
 
-    log(
-      `[Discord:AskQ] sessionId=${event.sessionId} tmuxTarget=${event.tmuxTarget} questions=${event.questions.length}`
-    );
+    logger.info(`[Discord:AskQ] paneId=${event.paneId} questions=${event.questions.length}`);
 
-    if (this.pending.size >= MAX_PENDING && !this.pending.has(event.sessionId)) {
+    if (this.pending.size >= MAX_PENDING && !this.pending.has(event.paneId)) {
       const oldest = [...this.pending.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
       if (oldest) this.clearPending(oldest[0]);
     }
@@ -64,8 +64,7 @@ export class DiscordAskQuestionHandler {
     const pendingId = this.nextPendingId++;
     const pq: PendingQuestion = {
       pendingId,
-      sessionId: event.sessionId,
-      tmuxTarget: event.tmuxTarget,
+      paneId: event.paneId,
       questions: event.questions,
       currentIndex: 0,
       answers: new Map(),
@@ -74,7 +73,7 @@ export class DiscordAskQuestionHandler {
       createdAt: Date.now(),
     };
 
-    this.setPending(event.sessionId, pq);
+    this.setPending(event.paneId, pq);
     await this.sendQuestion(channel, pq, 0);
   }
 
@@ -117,9 +116,13 @@ export class DiscordAskQuestionHandler {
 
     const n = qIdx + 1;
     const total = pq.questions.length;
+    const sessionLine = this.resolveSessionLabel(pq.paneId);
+    const titleParts = [sessionLine, `Question ${n}/${total}${q.header ? ` [${q.header}]` : ""}`]
+      .filter(Boolean)
+      .join(" — ");
     const embed = new EmbedBuilder()
       .setColor(EMBED_COLOR)
-      .setTitle(`Question ${n}/${total}${q.header ? ` [${q.header}]` : ""}`)
+      .setTitle(titleParts)
       .setDescription(q.question)
       .setTimestamp();
 
@@ -220,36 +223,36 @@ export class DiscordAskQuestionHandler {
     const answer = pq.answers.get(qIdx);
     if (!q || !answer) return;
 
-    logDebug(
-      `[Discord:AskQ:inject] tmuxTarget=${pq.tmuxTarget} qIdx=${qIdx} indices=${answer.indices}`
+    logger.debug(
+      `[Discord:AskQ:inject] paneId=${pq.paneId} qIdx=${qIdx} indices=${answer.indices}`
     );
 
     try {
-      const ready = await this.injector.waitForTui(pq.tmuxTarget, 5000);
+      const ready = await this.injector.waitForTui(pq.paneId, 5000);
       if (!ready) throw new Error("TUI not ready");
 
       if (q.multiSelect) {
-        await this.injector.injectMultiSelect(pq.tmuxTarget, q, answer);
+        await this.injector.injectMultiSelect(pq.paneId, q, answer);
       } else {
-        await this.injector.injectSingleSelect(pq.tmuxTarget, q, answer);
+        await this.injector.injectSingleSelect(pq.paneId, q, answer);
       }
     } catch (err) {
-      logError("[Discord:AskQ] injection failed", err);
+      logger.error({ err }, "[Discord:AskQ] injection failed");
     }
   }
 
   private async advanceToNext(pq: PendingQuestion): Promise<void> {
     pq.currentIndex++;
     if (pq.currentIndex >= pq.questions.length) {
-      logDebug(`[Discord:AskQ:submit] all ${pq.questions.length} questions answered`);
+      logger.debug(`[Discord:AskQ:submit] all ${pq.questions.length} questions answered`);
       await new Promise((resolve) => setTimeout(resolve, 500));
       try {
-        const ready = await this.injector.waitForTui(pq.tmuxTarget, 5000);
-        if (ready) this.injector.sendEnter(pq.tmuxTarget);
+        const ready = await this.injector.waitForTui(pq.paneId, 5000);
+        if (ready) this.injector.sendEnter(pq.paneId);
       } catch {
         /* best-effort */
       }
-      this.clearPending(pq.sessionId);
+      this.clearPending(pq.paneId);
 
       const channel = this.getChannel();
       if (channel) {
@@ -263,27 +266,33 @@ export class DiscordAskQuestionHandler {
     if (channel) await this.sendQuestion(channel, pq, pq.currentIndex);
   }
 
+  private resolveSessionLabel(paneId: string): string {
+    const pane = this.paneRegistry?.getByPaneId(paneId);
+    if (!pane) return "";
+    return buildSessionLabel(pane.project, pane.model, paneId);
+  }
+
   private findPendingByNumericId(id: number): PendingQuestion | undefined {
-    const sessionId = this.pendingById.get(id);
-    if (!sessionId) return undefined;
-    return this.pending.get(sessionId);
+    const paneId = this.pendingById.get(id);
+    if (!paneId) return undefined;
+    return this.pending.get(paneId);
   }
 
-  private setPending(sessionId: string, pq: PendingQuestion): void {
-    this.clearPending(sessionId);
-    this.pending.set(sessionId, pq);
-    this.pendingById.set(pq.pendingId, sessionId);
-    const timer = setTimeout(() => this.clearPending(sessionId), EXPIRE_MS);
-    this.timers.set(sessionId, timer);
+  private setPending(paneId: string, pq: PendingQuestion): void {
+    this.clearPending(paneId);
+    this.pending.set(paneId, pq);
+    this.pendingById.set(pq.pendingId, paneId);
+    const timer = setTimeout(() => this.clearPending(paneId), EXPIRE_MS);
+    this.timers.set(paneId, timer);
   }
 
-  private clearPending(sessionId: string): void {
-    const pq = this.pending.get(sessionId);
+  private clearPending(paneId: string): void {
+    const pq = this.pending.get(paneId);
     if (pq) this.pendingById.delete(pq.pendingId);
-    this.pending.delete(sessionId);
-    const timer = this.timers.get(sessionId);
+    this.pending.delete(paneId);
+    const timer = this.timers.get(paneId);
     if (timer) clearTimeout(timer);
-    this.timers.delete(sessionId);
+    this.timers.delete(paneId);
   }
 }
 

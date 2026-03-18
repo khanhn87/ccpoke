@@ -9,17 +9,25 @@ import {
 } from "discord.js";
 
 import type { PermissionRequestEvent } from "../../agent/agent-handler.js";
-import type { SessionMap } from "../../tmux/session-map.js";
+import { AGENT_DISPLAY_NAMES, AgentName } from "../../agent/types.js";
+import { t } from "../../i18n/index.js";
+import type { PaneRegistry } from "../../tmux/pane-registry.js";
 import type { TmuxBridge } from "../../tmux/tmux-bridge.js";
-import { log, logDebug, logError } from "../../utils/log.js";
+import { logger } from "../../utils/log.js";
+import {
+  isExitPlanMode,
+  parsePermissionCallback,
+  PermissionTuiInjector,
+} from "../permission-tui-injector.js";
+import { buildSessionLabel } from "../session-label.js";
 import { summarizeTool } from "../summarize-tool.js";
 
 interface PendingPermission {
   pendingId: number;
-  sessionId: string;
-  tmuxTarget: string;
+  paneId: string;
   toolName: string;
   toolSummary: string;
+  planLabels?: string[];
   createdAt: number;
 }
 
@@ -33,20 +41,21 @@ export class DiscordPermissionHandler {
   private pending = new Map<number, PendingPermission>();
   private timers = new Map<number, ReturnType<typeof setTimeout>>();
   private nextPendingId = 1;
+  private injector: PermissionTuiInjector;
 
   constructor(
     private getChannel: () => DMChannel | TextChannel | null,
-    private sessionMap: SessionMap,
-    private tmuxBridge: TmuxBridge
-  ) {}
+    private paneRegistry: PaneRegistry,
+    tmuxBridge: TmuxBridge
+  ) {
+    this.injector = new PermissionTuiInjector(tmuxBridge);
+  }
 
   async forwardPermission(event: PermissionRequestEvent): Promise<void> {
     const channel = this.getChannel();
-    if (!channel || !event.tmuxTarget) return;
+    if (!channel || !event.paneId) return;
 
-    log(
-      `[Discord:PermReq] sessionId=${event.sessionId} tmuxTarget=${event.tmuxTarget} tool=${event.toolName}`
-    );
+    logger.info(`[Discord:PermReq] paneId=${event.paneId} tool=${event.toolName}`);
 
     if (this.pending.size >= MAX_PENDING) {
       const oldest = [...this.pending.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
@@ -55,45 +64,52 @@ export class DiscordPermissionHandler {
 
     const pendingId = this.nextPendingId++;
     const toolSummary = summarizeTool(event.toolName, event.toolInput);
-    const session = this.sessionMap.getBySessionId(event.sessionId);
-    const projectName = session?.project ?? "unknown";
+    const pane = this.paneRegistry.getByPaneId(event.paneId);
+    const projectName = pane?.project ?? "unknown";
+    const agentName = AGENT_DISPLAY_NAMES[(pane?.agent as AgentName) ?? AgentName.ClaudeCode];
+
+    const planLabels = isExitPlanMode(event.toolName)
+      ? this.injector.extractPlanOptions(event.paneId)
+      : undefined;
 
     const pp: PendingPermission = {
       pendingId,
-      sessionId: event.sessionId,
-      tmuxTarget: event.tmuxTarget,
+      paneId: event.paneId,
       toolName: event.toolName,
       toolSummary,
+      planLabels,
       createdAt: Date.now(),
     };
 
     this.setPending(pendingId, pp);
 
-    const embed = new EmbedBuilder()
-      .setColor(EMBED_COLOR_WARN)
-      .setTitle("⚠️ Permission Request")
-      .setDescription(`**${projectName}**`)
-      .addFields(
-        { name: "🔧 Tool", value: event.toolName, inline: true },
-        { name: "Input", value: `\`${toolSummary}\`` }
-      )
-      .setTimestamp();
+    const label = buildSessionLabel(projectName, pane?.model ?? "", event.paneId);
 
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`perm:a:${pendingId}`)
-        .setLabel("Allow")
-        .setStyle(ButtonStyle.Success)
-        .setEmoji("✅"),
-      new ButtonBuilder()
-        .setCustomId(`perm:d:${pendingId}`)
-        .setLabel("Deny")
-        .setStyle(ButtonStyle.Danger)
-        .setEmoji("❌")
-    );
+    let embed: EmbedBuilder;
+    if (isExitPlanMode(event.toolName)) {
+      embed = new EmbedBuilder()
+        .setColor(EMBED_COLOR_WARN)
+        .setTitle(label)
+        .setDescription(`🐾 ${agentName}\n\n${t("permissionRequest.planTitle")}`)
+        .setTimestamp();
+    } else {
+      embed = new EmbedBuilder()
+        .setColor(EMBED_COLOR_WARN)
+        .setTitle("⚠️ Permission Request")
+        .setDescription(`**${label}**`)
+        .addFields(
+          { name: "🔧 Tool", value: event.toolName, inline: true },
+          { name: "Input", value: `\`${toolSummary}\`` }
+        )
+        .setTimestamp();
+    }
+
+    const row = planLabels
+      ? this.buildPlanButtons(pendingId, planLabels)
+      : this.buildStandardButtons(pendingId);
 
     await channel.send({ embeds: [embed], components: [row] }).catch((err: unknown) => {
-      logError("[Discord:PermReq] send failed", err);
+      logger.error({ err }, "[Discord:PermReq] send failed");
     });
   }
 
@@ -101,9 +117,8 @@ export class DiscordPermissionHandler {
     const parts = interaction.customId.split(":");
     if (parts.length < 3) return;
 
-    const action = parts[1];
+    const action = parts[1]!;
     const pendingId = parseInt(parts[2]!, 10);
-    const allow = action === "a";
 
     const pp = this.pending.get(pendingId);
     if (!pp) {
@@ -111,23 +126,37 @@ export class DiscordPermissionHandler {
       return;
     }
 
-    const resultEmoji = allow ? "✅" : "❌";
-    const resultText = allow
-      ? `Allowed: **${pp.toolName}** — \`${pp.toolSummary}\``
-      : `Denied: **${pp.toolName}** — \`${pp.toolSummary}\``;
+    const injectionResult = parsePermissionCallback(action);
+
+    let resultText: string;
+    let embedColor: number;
+
+    if (injectionResult.action === "plan-option") {
+      const label = pp.planLabels?.[injectionResult.optionIndex!] ?? "";
+      resultText = t("permissionRequest.planApproved", { option: label });
+      embedColor = EMBED_COLOR_ALLOW;
+    } else {
+      const allow = injectionResult.action === "allow";
+      resultText = allow
+        ? `Allowed: **${pp.toolName}** — \`${pp.toolSummary}\``
+        : `Denied: **${pp.toolName}** — \`${pp.toolSummary}\``;
+      embedColor = allow ? EMBED_COLOR_ALLOW : EMBED_COLOR_DENY;
+    }
+
+    const resultEmoji = injectionResult.action === "deny" ? "❌" : "✅";
 
     const updatedEmbed = new EmbedBuilder()
-      .setColor(allow ? EMBED_COLOR_ALLOW : EMBED_COLOR_DENY)
+      .setColor(embedColor)
       .setDescription(`${resultEmoji} ${resultText}`)
       .setTimestamp();
 
     await interaction.deferUpdate();
 
     try {
-      await injectResponse(this.tmuxBridge, pp.tmuxTarget, allow);
-      logDebug(`[Discord:PermReq] injected ${allow ? "allow" : "deny"} → ${pp.tmuxTarget}`);
+      await this.injector.inject(pp.paneId, injectionResult);
+      logger.debug(`[Discord:PermReq] injected ${injectionResult.action} → ${pp.paneId}`);
     } catch (err) {
-      logError("[Discord:PermReq] injection failed", err);
+      logger.error({ err }, "[Discord:PermReq] injection failed");
     }
 
     await interaction.editReply({ embeds: [updatedEmbed], components: [] }).catch(() => {});
@@ -139,6 +168,37 @@ export class DiscordPermissionHandler {
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
     this.pending.clear();
+  }
+
+  private buildPlanButtons(pendingId: number, labels: string[]): ActionRowBuilder<ButtonBuilder> {
+    const styles = [ButtonStyle.Success, ButtonStyle.Primary, ButtonStyle.Secondary];
+    const emojis = ["🔄", "⚡", "✋"];
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(
+      ...labels
+        .slice(0, 3)
+        .map((label, i) =>
+          new ButtonBuilder()
+            .setCustomId(`perm:e${i}:${pendingId}`)
+            .setLabel(label)
+            .setStyle(styles[i]!)
+            .setEmoji(emojis[i]!)
+        )
+    );
+  }
+
+  private buildStandardButtons(pendingId: number): ActionRowBuilder<ButtonBuilder> {
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`perm:a:${pendingId}`)
+        .setLabel("Allow")
+        .setStyle(ButtonStyle.Success)
+        .setEmoji("✅"),
+      new ButtonBuilder()
+        .setCustomId(`perm:d:${pendingId}`)
+        .setLabel("Deny")
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji("❌")
+    );
   }
 
   private setPending(pendingId: number, pp: PendingPermission): void {
@@ -153,14 +213,4 @@ export class DiscordPermissionHandler {
     if (timer) clearTimeout(timer);
     this.timers.delete(pendingId);
   }
-}
-
-async function injectResponse(
-  tmuxBridge: TmuxBridge,
-  tmuxTarget: string,
-  allow: boolean
-): Promise<void> {
-  const ready = await tmuxBridge.waitForTuiReady(tmuxTarget, 5000);
-  if (!ready) throw new Error("TUI not ready");
-  tmuxBridge.sendKeys(tmuxTarget, allow ? "y" : "n", ["Enter"]);
 }

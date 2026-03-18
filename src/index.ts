@@ -7,6 +7,7 @@ import { DiscordChannel } from "./channel/discord/discord-channel.js";
 import { SlackChannel } from "./channel/slack/slack-channel.js";
 import { TelegramChannel } from "./channel/telegram/telegram-channel.js";
 import type { ChannelDeps, NotificationChannel } from "./channel/types.js";
+import { runBug } from "./commands/bug.js";
 import { runChannel } from "./commands/channel.js";
 import { runHelp } from "./commands/help.js";
 import { runProject } from "./commands/project.js";
@@ -14,18 +15,22 @@ import { runSetup } from "./commands/setup.js";
 import { runUninstall } from "./commands/uninstall.js";
 import { runUpdate } from "./commands/update.js";
 import { ConfigManager, type Config } from "./config-manager.js";
+import { HookEnvWriter } from "./hooks/hook-env-writer.js";
 import { t } from "./i18n/index.js";
 import { ApiServer } from "./server/api-server.js";
-import { SessionMap } from "./tmux/session-map.js";
-import { SessionStateManager } from "./tmux/session-state.js";
+import { PaneRegistry } from "./tmux/pane-registry.js";
+import { PaneStateManager } from "./tmux/pane-state-manager.js";
 import { TmuxBridge } from "./tmux/tmux-bridge.js";
-import { TmuxSessionResolver } from "./tmux/tmux-session-resolver.js";
-import { ChannelName, CliCommand, InstallMethod, isWindows } from "./utils/constants.js";
+import { TmuxPaneResolver } from "./tmux/tmux-pane-resolver.js";
+import { findAgentDescendant, queryPanePid } from "./tmux/tmux-scanner.js";
+import { TunnelManager } from "./tunnel/tunnel-manager.js";
+import { ChannelName, CliCommand, InstallMethod, refreshWindowsPath } from "./utils/constants.js";
 import { detectInstallMethod } from "./utils/install-detection.js";
-import { log, logError, logWarn } from "./utils/log.js";
+import { flushLogger, logger } from "./utils/log.js";
 import { ensureShellCompletion } from "./utils/shell-completion.js";
-import { TunnelManager } from "./utils/tunnel.js";
 import { checkForUpdates } from "./utils/version-check.js";
+
+refreshWindowsPath();
 
 const args = process.argv.slice(2);
 
@@ -41,18 +46,19 @@ async function loadOrSetupConfig(): Promise<Config> {
     ensureAgentHooks(config);
     return config;
   } catch {
-    log(t("bot.firstTimeSetup"));
+    logger.info(t("bot.firstTimeSetup"));
     try {
       return await runSetup({ autoStart: true });
     } catch (err: unknown) {
-      logError(t("common.setupFailed"), err);
-      process.exit(1);
+      logger.error({ err }, t("common.setupFailed"));
+      return new Promise(() => flushLogger(() => process.exit(1)));
     }
   }
 }
 
 function ensureAgentHooks(config: Config): void {
   const registry = createDefaultRegistry();
+  HookEnvWriter.write(config.hook_port, config.hook_secret);
 
   for (const agentName of config.agents) {
     const provider = registry.resolve(agentName);
@@ -62,12 +68,12 @@ function ensureAgentHooks(config: Config): void {
     if (integrity.complete) continue;
 
     if (!provider.detect()) {
-      logError(t("setup.agentNotInstalled", { agent: provider.displayName }));
+      logger.error(t("setup.agentNotInstalled", { agent: provider.displayName }));
       continue;
     }
 
-    provider.installHook(config.hook_port, config.hook_secret);
-    log(
+    provider.installHook();
+    logger.info(
       t("tmux.hookRepaired", { agent: provider.displayName, missing: integrity.missing.join(", ") })
     );
   }
@@ -84,33 +90,36 @@ function formatWarningBox(msg: string): string {
 async function startBot(): Promise<void> {
   await checkForUpdates().catch(() => {});
 
-  if (isWindows()) {
-    logWarn(formatWarningBox(t("bot.windowsNoTwoWay")), { showTimestamp: false });
-  }
-
   const cfg = await loadOrSetupConfig();
   ensureShellCompletion();
 
   const registry = createDefaultRegistry();
 
   const tmuxBridge = new TmuxBridge();
-  const sessionMap = new SessionMap();
-  const stateManager = new SessionStateManager(sessionMap, tmuxBridge, registry);
+  const paneRegistry = new PaneRegistry();
+  const paneStateManager = new PaneStateManager(paneRegistry, tmuxBridge, registry);
 
-  let chatResolver: TmuxSessionResolver | undefined;
+  let chatResolver: TmuxPaneResolver | undefined;
 
   if (tmuxBridge.isTmuxAvailable()) {
-    sessionMap.load();
-    const bootResult = sessionMap.refreshFromTmux(tmuxBridge);
-    chatResolver = new TmuxSessionResolver(sessionMap, stateManager);
-    sessionMap.startPeriodicScan(tmuxBridge, 15_000, (result) => {
-      for (const s of result.discovered)
-        log(t("tmux.sessionDiscovered", { target: s.tmuxTarget, project: s.project }));
-      for (const s of result.removed) {
-        log(t("tmux.sessionLost", { target: s.tmuxTarget, project: s.project }));
+    paneRegistry.load();
+    const bootResult = paneRegistry.refreshFromTmux(tmuxBridge);
+    if (
+      bootResult.reconciled > 0 ||
+      bootResult.discovered.length > 0 ||
+      bootResult.removed.length > 0
+    ) {
+      paneRegistry.save();
+    }
+    chatResolver = new TmuxPaneResolver(paneRegistry, paneStateManager);
+    paneRegistry.startPeriodicScan(tmuxBridge, 5_000, (result) => {
+      for (const p of result.discovered)
+        logger.info(t("tmux.sessionDiscovered", { target: p.paneId, project: p.project }));
+      for (const p of result.removed) {
+        logger.info(t("tmux.sessionLost", { target: p.paneId, project: p.project }));
       }
       if (result.discovered.length > 0 || result.removed.length > 0)
-        log(
+        logger.info(
           t("tmux.scanSummary", {
             active: result.total,
             discovered: result.discovered.length,
@@ -118,30 +127,30 @@ async function startBot(): Promise<void> {
           })
         );
     });
-    for (const s of bootResult.discovered)
-      log(t("tmux.sessionDiscovered", { target: s.tmuxTarget, project: s.project }));
-    log(t("tmux.scanComplete", { count: bootResult.total }));
-    log(t("bot.twowayEnabled"));
+    for (const p of bootResult.discovered)
+      logger.info(t("tmux.sessionDiscovered", { target: p.paneId, project: p.project }));
+    logger.info(t("tmux.scanComplete", { count: bootResult.total }));
+    logger.info(t("bot.twowayEnabled"));
   } else {
-    logWarn(formatWarningBox(t("tmux.notAvailable")), { showTimestamp: false });
+    logger.warn(formatWarningBox(t("tmux.notAvailable")));
   }
 
   const apiServer = new ApiServer(cfg.hook_port, cfg.hook_secret);
   await apiServer.start();
-  log(`ccpoke: ${t("bot.started", { port: cfg.hook_port })}`);
+  logger.info(`ccpoke: ${t("bot.started", { port: cfg.hook_port })}`);
 
-  const tunnelManager = new TunnelManager();
+  const tunnelManager = new TunnelManager(cfg.tunnel, cfg.ngrok_authtoken);
   apiServer.setTunnelManager(tunnelManager);
   try {
     const tunnelUrl = await tunnelManager.start(cfg.hook_port);
-    log(t("tunnel.started", { url: tunnelUrl }));
+    if (tunnelUrl) logger.info(t("tunnel.started", { url: tunnelUrl }));
   } catch (err: unknown) {
-    logError(t("tunnel.failed"), err);
+    logger.error({ err }, t("tunnel.failed"));
   }
 
   let channel: NotificationChannel;
 
-  const deps: ChannelDeps = { sessionMap, stateManager, tmuxBridge, registry };
+  const deps: ChannelDeps = { paneRegistry, paneStateManager, tmuxBridge, registry };
 
   switch (cfg.channel) {
     case ChannelName.Discord:
@@ -162,17 +171,19 @@ async function startBot(): Promise<void> {
       string,
       unknown
     >;
-    if (typeof obj.session_id !== "string" || typeof obj.tmux_target !== "string") return;
-    if (!/^[a-zA-Z0-9_.:/@ -]+$/.test(obj.tmux_target)) return;
+    if (typeof obj.session_id !== "string" || typeof obj.pane_id !== "string") return;
+    if (!/^%\d+$/.test(obj.pane_id)) return;
     const cwd = typeof obj.cwd === "string" ? obj.cwd : "";
     const project = basename(cwd) || "unknown";
-    sessionMap.register(obj.session_id, obj.tmux_target, project, cwd);
-    sessionMap.save();
-    log(
+    const panePid = typeof obj.pane_id === "string" ? queryPanePid(obj.pane_id) : undefined;
+    const detectedAgent = panePid ? (findAgentDescendant(panePid) ?? undefined) : undefined;
+    paneRegistry.register(obj.pane_id, project, cwd, "", detectedAgent);
+    paneRegistry.save();
+    logger.info(
       t("tmux.hookReceived", {
         event: "SessionStart",
         sessionId: obj.session_id,
-        target: obj.tmux_target,
+        target: obj.pane_id,
         project,
       })
     );
@@ -195,24 +206,34 @@ async function startBot(): Promise<void> {
   await channel.initialize();
 
   if (detectInstallMethod() === InstallMethod.Npx) {
-    log(t("bot.globalInstallTip"));
+    logger.info(t("bot.globalInstallTip"));
   }
 
   let shutdownStarted = false;
   const shutdown = async () => {
     if (shutdownStarted) return;
     shutdownStarted = true;
-    log(t("bot.shuttingDown"));
-    sessionMap.stopPeriodicScan();
-    sessionMap.save();
-    tunnelManager.stop();
+    logger.info(t("bot.shuttingDown"));
+    paneRegistry.stopPeriodicScan();
+    paneRegistry.save();
+    await tunnelManager.stop();
     await channel.shutdown();
     await apiServer.stop();
-    process.exit(0);
+    flushLogger(() => process.exit(0));
   };
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  process.on("uncaughtException", (err) => {
+    logger.error({ err }, "uncaught exception");
+    flushLogger(() => process.exit(1));
+  });
+
+  process.on("unhandledRejection", (reason) => {
+    logger.error({ err: reason }, "unhandled rejection");
+    flushLogger(() => process.exit(1));
+  });
 }
 
 function handleSubcommand(args: string[]): void {
@@ -225,8 +246,8 @@ function handleSubcommand(args: string[]): void {
   switch (args[0]) {
     case CliCommand.Setup:
       runSetup().catch((err: unknown) => {
-        logError(t("common.setupFailed"), err);
-        process.exit(1);
+        logger.error({ err }, t("common.setupFailed"));
+        flushLogger(() => process.exit(1));
       });
       break;
 
@@ -240,15 +261,15 @@ function handleSubcommand(args: string[]): void {
 
     case CliCommand.Project:
       runProject().catch((err: unknown) => {
-        logError(t("common.setupFailed"), err);
-        process.exit(1);
+        logger.error({ err }, t("common.setupFailed"));
+        flushLogger(() => process.exit(1));
       });
       break;
 
     case CliCommand.Channel:
       runChannel().catch((err: unknown) => {
-        logError(t("common.setupFailed"), err);
-        process.exit(1);
+        logger.error({ err }, t("common.setupFailed"));
+        flushLogger(() => process.exit(1));
       });
       break;
 
@@ -258,9 +279,16 @@ function handleSubcommand(args: string[]): void {
       runHelp();
       break;
 
+    case CliCommand.Bug:
+      runBug().catch((err: unknown) => {
+        logger.error({ err }, t("common.setupFailed"));
+        flushLogger(() => process.exit(1));
+      });
+      break;
+
     default:
-      logError(t("common.unknownCommand", { command: args[0]! }));
+      logger.error(t("common.unknownCommand", { command: args[0]! }));
       runHelp();
-      process.exit(1);
+      flushLogger(() => process.exit(1));
   }
 }

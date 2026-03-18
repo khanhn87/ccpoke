@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 
-import { ApiRoute } from "../../utils/constants.js";
-import { getPackageVersion, paths } from "../../utils/paths.js";
+import { HookScriptCopier } from "../../hooks/hook-script-copier.js";
+import { ApiRoute, CCPOKE_MARKER } from "../../utils/constants.js";
+import { paths } from "../../utils/paths.js";
 import { AgentName } from "../types.js";
 
 export interface GeminiHookCommand {
@@ -30,8 +31,6 @@ export interface HookEventConfig {
   timeout: number;
 }
 
-const VERSION_HEADER_PATTERN = /^#\s*ccpoke-version:\s*(\S+)/;
-const CCPOKE_MARKER = "ccpoke";
 const AGENT_PARAM = `?agent=${AgentName.GeminiCli}`;
 
 export function buildHookConfigs(): HookEventConfig[] {
@@ -73,33 +72,10 @@ export function hasCcpokeHook(entries: GeminiHookEntry[]): boolean {
   );
 }
 
-export function readScriptVersion(scriptPath: string): string | null {
-  try {
-    const lines = readFileSync(scriptPath, "utf-8").split("\n");
-    for (const line of lines.slice(0, 3)) {
-      const match = line.match(VERSION_HEADER_PATTERN);
-      if (match) return match[1] ?? null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-export function readGeminiSettings(): GeminiSettings {
-  try {
-    return JSON.parse(readFileSync(paths.geminiSettings, "utf-8"));
-  } catch (err: unknown) {
-    const isFileNotFound = err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT";
-    if (isFileNotFound) return {};
-    throw err;
-  }
-}
-
 export function isScriptPresent(scriptPath: string): boolean {
   return existsSync(scriptPath);
 }
 
-export function isScriptCurrent(scriptPath: string): boolean {
-  return readScriptVersion(scriptPath) === getPackageVersion();
+export function isScriptCurrent(scriptPath: string, sourceFileName: string): boolean {
+  return !HookScriptCopier.needsCopy(sourceFileName, scriptPath);
 }

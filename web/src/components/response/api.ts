@@ -28,7 +28,9 @@ export function parseQueryParams(): ResponseParams | null {
 
 async function tryFetch(apiBase: string, id: string): Promise<ResponseData | null> {
   try {
-    const response = await fetch(`${apiBase}/api/responses/${id}`);
+    const response = await fetch(`${apiBase}/api/responses/${id}`, {
+      headers: { "ngrok-skip-browser-warning": "1" },
+    });
     if (!response.ok) return null;
     return await response.json();
   } catch {

@@ -16,6 +16,18 @@ export function summarizeTool(toolName: string, input: Record<string, unknown>):
             : toolName;
     case "Agent":
       return typeof input.description === "string" ? truncate(input.description, 80) : toolName;
+    case "ExitPlanMode": {
+      const prompts = input.allowedPrompts;
+      if (Array.isArray(prompts) && prompts.length > 0) {
+        return prompts
+          .map((p) => {
+            const obj = p as Record<string, string>;
+            return `${obj.tool}: ${obj.prompt}`;
+          })
+          .join(", ");
+      }
+      return "Plan approval";
+    }
     default:
       return toolName;
   }

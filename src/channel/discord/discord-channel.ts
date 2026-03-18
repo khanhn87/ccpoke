@@ -24,21 +24,21 @@ import type {
 import type { AgentRegistry } from "../../agent/agent-registry.js";
 import { ConfigManager, type Config } from "../../config-manager.js";
 import { t } from "../../i18n/index.js";
-import type { SessionMap } from "../../tmux/session-map.js";
-import type { SessionStateManager } from "../../tmux/session-state.js";
+import type { PaneRegistry } from "../../tmux/pane-registry.js";
+import type { PaneStateManager } from "../../tmux/pane-state-manager.js";
 import type { TmuxBridge } from "../../tmux/tmux-bridge.js";
-import { log, logDebug, logError } from "../../utils/log.js";
+import { logger } from "../../utils/log.js";
 import type { ChannelDeps, NotificationChannel, NotificationData } from "../types.js";
 import { DiscordAskQuestionHandler } from "./discord-ask-question-handler.js";
 import { formatNotificationEmbed } from "./discord-markdown.js";
+import { DiscordPaneCommandHandler } from "./discord-pane-command-handler.js";
 import { DiscordPermissionHandler } from "./discord-permission-handler.js";
 import { DiscordPromptHandler } from "./discord-prompt-handler.js";
 import { sendDiscordDM } from "./discord-sender.js";
-import { DiscordSessionCommandHandler } from "./discord-session-command-handler.js";
 
 interface PendingElicitation {
   messageId: string;
-  sessionId: string;
+  paneId: string;
   project: string;
 }
 
@@ -50,22 +50,22 @@ export class DiscordChannel implements NotificationChannel {
   private client: Client;
   private dmChannel: DMChannel | TextChannel | null = null;
   private cfg: Config;
-  private sessionMap: SessionMap | null;
-  private stateManager: SessionStateManager | null;
+  private paneRegistry: PaneRegistry | null;
+  private paneStateManager: PaneStateManager | null;
   private tmuxBridge: TmuxBridge | null;
   private registry: AgentRegistry | null;
   private permissionHandler: DiscordPermissionHandler | null = null;
   private askQuestionHandler: DiscordAskQuestionHandler | null = null;
   private promptHandler: DiscordPromptHandler | null = null;
-  private sessionCommandHandler: DiscordSessionCommandHandler | null = null;
+  private paneCommandHandler: DiscordPaneCommandHandler | null = null;
   private pendingElicitations = new Map<string, PendingElicitation>();
   private elicitationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private activeIntervals: ReturnType<typeof setInterval>[] = [];
 
   constructor(cfg: Config, deps?: ChannelDeps) {
     this.cfg = cfg;
-    this.sessionMap = deps?.sessionMap ?? null;
-    this.stateManager = deps?.stateManager ?? null;
+    this.paneRegistry = deps?.paneRegistry ?? null;
+    this.paneStateManager = deps?.paneStateManager ?? null;
     this.tmuxBridge = deps?.tmuxBridge ?? null;
     this.registry = deps?.registry ?? null;
 
@@ -85,7 +85,7 @@ export class DiscordChannel implements NotificationChannel {
       );
       this.client.once(Events.ClientReady, async () => {
         clearTimeout(timer);
-        log(`[Discord] bot ready as ${this.client.user?.tag}`);
+        logger.info(`[Discord] bot ready as ${this.client.user?.tag}`);
         await this.openDMChannel();
         await this.registerSlashCommands();
         this.registerInteractionHandler();
@@ -94,33 +94,34 @@ export class DiscordChannel implements NotificationChannel {
       });
     });
 
-    if (this.dmChannel && this.sessionMap && this.tmuxBridge && this.registry) {
+    if (this.dmChannel && this.paneRegistry && this.tmuxBridge && this.registry) {
       this.permissionHandler = new DiscordPermissionHandler(
         () => this.dmChannel,
-        this.sessionMap,
+        this.paneRegistry,
         this.tmuxBridge
       );
 
       this.askQuestionHandler = new DiscordAskQuestionHandler(
         () => this.dmChannel,
-        this.tmuxBridge
+        this.tmuxBridge,
+        this.paneRegistry
       );
 
       this.promptHandler = new DiscordPromptHandler(
         () => this.dmChannel,
-        this.sessionMap,
+        this.paneRegistry,
         this.tmuxBridge,
         this.registry
       );
 
-      this.promptHandler.onElicitationSent = (messageId, sessionId, project) => {
-        this.trackElicitation(messageId, sessionId, project);
+      this.promptHandler.onElicitationSent = (messageId, paneId, project) => {
+        this.trackElicitation(messageId, paneId, project);
       };
 
-      this.sessionCommandHandler = new DiscordSessionCommandHandler(
-        this.sessionMap,
+      this.paneCommandHandler = new DiscordPaneCommandHandler(
+        this.paneRegistry,
         this.tmuxBridge,
-        this.stateManager,
+        this.paneStateManager,
         this.activeIntervals
       );
     }
@@ -158,25 +159,25 @@ export class DiscordChannel implements NotificationChannel {
 
   async sendNotification(data: NotificationData, responseUrl?: string): Promise<void> {
     if (!this.dmChannel) {
-      log("[Discord] no DM channel configured");
+      logger.info("[Discord] no DM channel configured");
       return;
     }
 
     try {
       const embed = formatNotificationEmbed(data, responseUrl);
-      const components = data.sessionId
-        ? [buildChatRow(data.sessionId, responseUrl)]
+      const components = data.paneId
+        ? [buildChatRow(data.paneId, data.panePid, responseUrl)]
         : responseUrl
           ? [buildViewRow(responseUrl)]
           : [];
 
       await this.dmChannel.send({ embeds: [embed], components });
     } catch (err) {
-      logError("[Discord] notification send failed", err);
+      logger.error({ err }, "[Discord] notification send failed");
     }
   }
 
-  private trackElicitation(messageId: string, sessionId: string, project: string): void {
+  private trackElicitation(messageId: string, paneId: string, project: string): void {
     if (this.pendingElicitations.size >= MAX_PENDING_ELICITATIONS) {
       const oldest = this.pendingElicitations.keys().next().value as string;
       this.pendingElicitations.delete(oldest);
@@ -187,7 +188,7 @@ export class DiscordChannel implements NotificationChannel {
       }
     }
 
-    this.pendingElicitations.set(messageId, { messageId, sessionId, project });
+    this.pendingElicitations.set(messageId, { messageId, paneId, project });
     const ttl = setTimeout(() => {
       this.pendingElicitations.delete(messageId);
       this.elicitationTimers.delete(messageId);
@@ -215,9 +216,9 @@ export class DiscordChannel implements NotificationChannel {
         ConfigManager.saveChatState({ ...saved, discord_dm_id: this.dmChannel.id });
       }
 
-      logDebug(`[Discord] DM channel opened: ${this.dmChannel.id}`);
+      logger.debug(`[Discord] DM channel opened: ${this.dmChannel.id}`);
     } catch (err) {
-      logError("[Discord] failed to open DM channel", err);
+      logger.error({ err }, "[Discord] failed to open DM channel");
     }
   }
 
@@ -232,9 +233,9 @@ export class DiscordChannel implements NotificationChannel {
     try {
       const rest = new REST().setToken(this.cfg.discord_bot_token);
       await rest.put(Routes.applicationCommands(this.client.user.id), { body: commands });
-      log("[Discord] slash commands registered");
+      logger.info("[Discord] slash commands registered");
     } catch (err) {
-      logError("[Discord] slash command registration failed", err);
+      logger.error({ err }, "[Discord] slash command registration failed");
     }
   }
 
@@ -244,9 +245,9 @@ export class DiscordChannel implements NotificationChannel {
         if (interaction.user.id !== this.cfg.discord_user_id) return;
         if (interaction.isChatInputCommand()) {
           if (interaction.commandName === "sessions") {
-            await this.sessionCommandHandler?.handleSessionsCommand(interaction);
+            await this.paneCommandHandler?.handleSessionsCommand(interaction);
           } else if (interaction.commandName === "projects") {
-            await this.sessionCommandHandler?.handleProjectsCommand(interaction);
+            await this.paneCommandHandler?.handleProjectsCommand(interaction);
           }
           return;
         }
@@ -254,10 +255,7 @@ export class DiscordChannel implements NotificationChannel {
         if (interaction.isModalSubmit()) {
           const customId = interaction.customId;
           if (customId.startsWith("chat_modal:")) {
-            await this.sessionCommandHandler?.handleChatModalSubmit(
-              interaction,
-              customId.slice(11)
-            );
+            await this.paneCommandHandler?.handleChatModalSubmit(interaction, customId.slice(11));
           }
           return;
         }
@@ -273,16 +271,16 @@ export class DiscordChannel implements NotificationChannel {
         } else if (id.startsWith("elicit:")) {
           await this.promptHandler?.handleElicitReplyButton(btn, id.slice(7));
         } else if (id.startsWith("session_chat:")) {
-          await this.sessionCommandHandler?.handleSessionChatButton(btn, id.slice(13));
+          await this.paneCommandHandler?.handleSessionChatButton(btn, id.slice(13));
         } else if (id.startsWith("session_close:")) {
-          await this.sessionCommandHandler?.handleSessionCloseButton(btn, id.slice(14));
+          await this.paneCommandHandler?.handleSessionCloseButton(btn, id.slice(14));
         } else if (id.startsWith("proj:")) {
-          await this.sessionCommandHandler?.handleProjectButton(btn, parseInt(id.slice(5), 10));
+          await this.paneCommandHandler?.handleProjectButton(btn, parseInt(id.slice(5), 10));
         } else if (id.startsWith("agent_start:")) {
-          await this.sessionCommandHandler?.handleAgentStartButton(btn);
+          await this.paneCommandHandler?.handleAgentStartButton(btn);
         }
       } catch (err) {
-        logError("[Discord] interaction error", err);
+        logger.error({ err }, "[Discord] interaction error");
       }
     });
   }
@@ -310,19 +308,19 @@ export class DiscordChannel implements NotificationChannel {
       this.clearElicitationTimer(matchedKey);
 
       if (this.promptHandler) {
-        const injected = this.promptHandler.injectElicitationResponse(elicitation.sessionId, text);
+        const injected = this.promptHandler.injectElicitationResponse(elicitation.paneId, text);
         if (injected) {
           await msg.reply(`Sent to **${elicitation.project}**`).catch(() => {});
           return;
         }
       }
 
-      if (!this.stateManager) {
+      if (!this.paneStateManager) {
         await msg.reply("Session not found or expired.").catch(() => {});
         return;
       }
 
-      const result = this.stateManager.injectMessage(elicitation.sessionId, text);
+      const result = this.paneStateManager.injectMessage(elicitation.paneId, text);
       if ("sent" in result) {
         await msg.reply(`Sent to **${elicitation.project}**`).catch(() => {});
       } else if ("busy" in result) {
@@ -334,7 +332,11 @@ export class DiscordChannel implements NotificationChannel {
   }
 }
 
-function buildChatRow(sessionId: string, responseUrl?: string): ActionRowBuilder<ButtonBuilder> {
+function buildChatRow(
+  paneId: string,
+  panePid?: string,
+  responseUrl?: string
+): ActionRowBuilder<ButtonBuilder> {
   const row = new ActionRowBuilder<ButtonBuilder>();
 
   if (responseUrl) {
@@ -343,11 +345,9 @@ function buildChatRow(sessionId: string, responseUrl?: string): ActionRowBuilder
     );
   }
 
+  const chatId = panePid ? `session_chat:${paneId}:${panePid}` : `session_chat:${paneId}`;
   row.addComponents(
-    new ButtonBuilder()
-      .setCustomId(`session_chat:${sessionId}`)
-      .setLabel("💬 Chat")
-      .setStyle(ButtonStyle.Primary)
+    new ButtonBuilder().setCustomId(chatId).setLabel("💬 Chat").setStyle(ButtonStyle.Primary)
   );
 
   return row;

@@ -1,6 +1,6 @@
 {
   "name": "ccpoke",
-  "version": "1.6.29",
+  "version": "1.7.11",
   "description": "Your AI agent pokes you when it's done — zero-config, one command: npx -y ccpoke",
   "type": "module",
   "packageManager": "pnpm@10.28.2",
@@ -36,6 +36,8 @@
   },
   "files": [
     "dist",
+    "hooks",
+    "ccpoke-lock.json",
     "LICENSE",
     "README.md",
     "README.en.md"
@@ -49,13 +51,15 @@
     "build": "tsc && chmod +x dist/index.js",
     "prepublishOnly": "npm run build",
     "start": "node dist/index.js",
-    "dev": "LOG_LEVEL=debug tsx src/index.ts",
+    "dev": "cross-env LOG_LEVEL=debug tsx src/index.ts",
     "build:web": "cd web && npx astro build",
     "deploy:web": "npm run build:web && gh-pages -d web/dist --dotfiles",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write 'src/**/*.ts'",
     "format:check": "prettier --check 'src/**/*.ts'",
+    "hash:update": "tsx scripts/update-hook-hashes.ts",
+    "hash:check": "tsx scripts/check-hook-hashes.ts",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -66,22 +70,28 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
+    "@ngrok/ngrok": "^1.7.0",
     "@slack/web-api": "^7.14.1",
+    "adm-zip": "^0.5.16",
     "better-sqlite3": "^12.6.2",
     "cloudflared": "^0.7.1",
     "discord.js": "^14.25.1",
     "express": "^5.0.1",
     "node-telegram-bot-api": "^0.67.0",
+    "pino": "^10.3.1",
+    "pino-pretty": "^13.1.3",
     "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@ianvs/prettier-plugin-sort-imports": "^4.7.1",
+    "@types/adm-zip": "^0.5.7",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.0",
     "@types/node": "^22.13.4",
     "@types/node-telegram-bot-api": "^0.64.8",
     "@types/qrcode-terminal": "^0.12.2",
+    "cross-env": "^10.1.0",
     "eslint": "^10.0.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.5",

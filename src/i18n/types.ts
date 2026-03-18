@@ -33,7 +33,6 @@ export interface TranslationKeys {
     alreadyRunning: string;
     twowayEnabled: string;
     twowayDisabled: string;
-    windowsNoTwoWay: string;
   };
   setup: {
     intro: string;
@@ -71,6 +70,11 @@ export interface TranslationKeys {
     tmuxInstallSuccess: string;
     tmuxInstallFailed: string;
     tmuxInstallSkipped: string;
+    tmuxWindowsInstallPrompt: string;
+    tmuxWindowsInstallFailed: string;
+    psmuxDownloading: string;
+    psmuxDownloadFailed: string;
+    tmuxWindowsPathRefreshHint: string;
     addProjectPrompt: string;
     addAnotherProject: string;
     projectAdded: string;
@@ -103,6 +107,15 @@ export interface TranslationKeys {
     slackVerifyingChannel: string;
     slackChannelNotMember: string;
     slackChannelVerified: string;
+    tunnelMessage: string;
+    tunnelCustomUrlMessage: string;
+    tunnelCustomUrlPlaceholder: string;
+    ngrokAuthtokenMessage: string;
+    ngrokAuthtokenPlaceholder: string;
+    ngrokAuthtokenRequired: string;
+    ngrokVerifying: string;
+    ngrokVerified: string;
+    ngrokVerifyFailed: string;
   };
   uninstall: {
     intro: string;
@@ -151,6 +164,7 @@ export interface TranslationKeys {
     cmdHelp: string;
     cmdProject: string;
     cmdChannel: string;
+    cmdBug: string;
     docs: string;
   };
   hook: {
@@ -175,6 +189,15 @@ export interface TranslationKeys {
     retrying: string;
     attemptFailed: string;
     autoRestart: string;
+    disabled: string;
+    usingProvider: string;
+    invalidTunnelType: string;
+    customUrlMustBeHttps: string;
+    customUrlInvalid: string;
+    ngrokAuthtokenRequired: string;
+    ngrokNoUrl: string;
+    ngrokNoAutoRestart: string;
+    ngrokCloseFailed: string;
   };
   config: {
     notFound: string;
@@ -216,11 +239,19 @@ export interface TranslationKeys {
   chat: {
     placeholder: string;
     replyHint: string;
+    directMessageHint: string;
     sessionExpired: string;
     sessionNotFound: string;
     tmuxDead: string;
+    paneDead: string;
+    noAgent: string;
+    sentToShell: string;
+    agentStarting: string;
+    agentNotRunning: string;
     sent: string;
     busy: string;
+    cancelButton: string;
+    cancelled: string;
   };
   sessions: {
     title: string;
@@ -267,6 +298,7 @@ export interface TranslationKeys {
   };
   permissionRequest: {
     title: string;
+    planTitle: string;
     allow: string;
     deny: string;
     allowed: string;
@@ -274,6 +306,7 @@ export interface TranslationKeys {
     sending: string;
     sessionExpired: string;
     injectionFailed: string;
+    planApproved: string;
   };
   projectCmd: {
     intro: string;
@@ -305,5 +338,18 @@ export interface TranslationKeys {
     cancelled: string;
     notConfigured: string;
     configureNow: string;
+  };
+  bug: {
+    intro: string;
+    descriptionPrompt: string;
+    descriptionPlaceholder: string;
+    cancelled: string;
+    collecting: string;
+    saved: string;
+    openingFolder: string;
+    issueLink: string;
+    attachHint: string;
+    instructions: string;
+    noLogFile: string;
   };
 }

@@ -1,17 +1,16 @@
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 import { t } from "../../i18n/index.js";
 import { collectGitChanges } from "../../utils/git-collector.js";
-import { logDebug, logError } from "../../utils/log.js";
+import { logger } from "../../utils/log.js";
+import { paths } from "../../utils/paths.js";
 import {
   AGENT_DISPLAY_NAMES,
   AgentName,
   type AgentEventResult,
   type AgentProvider,
 } from "../types.js";
-import { CursorInstaller } from "./cursor-installer.js";
+import { cursorInstaller } from "./cursor-installer.js";
 import {
   extractProjectName,
   isValidStopEvent,
@@ -27,23 +26,23 @@ export class CursorProvider implements AgentProvider {
   readonly submitKeys = ["Enter"];
 
   detect(): boolean {
-    return existsSync(join(homedir(), ".cursor"));
+    return existsSync(paths.cursorDir);
   }
 
   isHookInstalled(): boolean {
-    return CursorInstaller.isInstalled();
+    return cursorInstaller.isInstalled();
   }
 
-  installHook(port: number, secret: string): void {
-    CursorInstaller.install(port, secret);
+  installHook(): void {
+    cursorInstaller.install();
   }
 
   uninstallHook(): void {
-    CursorInstaller.uninstall();
+    cursorInstaller.uninstall();
   }
 
   verifyIntegrity(): { complete: boolean; missing: string[] } {
-    return CursorInstaller.verifyIntegrity();
+    return cursorInstaller.verifyIntegrity();
   }
 
   parseEvent(raw: unknown): AgentEventResult {
@@ -52,10 +51,10 @@ export class CursorProvider implements AgentProvider {
     }
 
     const event = parseStopEvent(raw);
-    logDebug(`[Cursor:raw] ${JSON.stringify(raw)}`);
+    logger.debug(`[Cursor:raw] ${JSON.stringify(raw)}`);
 
     const composerData = readComposerData(event.conversationId);
-    logDebug(`[Cursor:composer] model=${composerData.model || "NONE"}`);
+    logger.debug(`[Cursor:composer] model=${composerData.model || "NONE"}`);
 
     let summary = {
       lastAssistantMessage: "",
@@ -65,20 +64,20 @@ export class CursorProvider implements AgentProvider {
     try {
       if (event.transcriptPath) {
         summary = parseTranscript(event.transcriptPath);
-        logDebug(
+        logger.debug(
           `[Cursor:transcript] lastMsg=${summary.lastAssistantMessage.slice(0, 80) || "EMPTY"}`
         );
       } else {
-        logDebug(`[Cursor:transcript] SKIPPED — no transcriptPath`);
+        logger.debug(`[Cursor:transcript] SKIPPED — no transcriptPath`);
       }
     } catch (err: unknown) {
-      logError(t("hook.transcriptFailed"), err);
+      logger.error({ err }, t("hook.transcriptFailed"));
     }
 
     const gitChanges = collectGitChanges(event.cwd);
 
     const obj = raw as Record<string, unknown>;
-    const tmuxTarget = typeof obj.tmux_target === "string" ? obj.tmux_target : undefined;
+    const paneId = typeof obj.pane_id === "string" ? obj.pane_id : undefined;
 
     return {
       projectName: extractProjectName(event.cwd, event.transcriptPath),
@@ -87,7 +86,7 @@ export class CursorProvider implements AgentProvider {
       model: composerData.model || event.model,
       agentSessionId: event.conversationId,
       cwd: event.cwd,
-      tmuxTarget,
+      paneId,
     };
   }
 
@@ -95,7 +94,7 @@ export class CursorProvider implements AgentProvider {
     const obj = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
     const cwd = typeof obj.cwd === "string" ? obj.cwd : "";
     const transcriptPath = typeof obj.transcript_path === "string" ? obj.transcript_path : "";
-    const tmuxTarget = typeof obj.tmux_target === "string" ? obj.tmux_target : undefined;
+    const paneId = typeof obj.pane_id === "string" ? obj.pane_id : undefined;
 
     return {
       projectName: cwd ? extractProjectName(cwd, transcriptPath) : "unknown",
@@ -103,7 +102,7 @@ export class CursorProvider implements AgentProvider {
       gitChanges: cwd ? collectGitChanges(cwd) : [],
       model: "",
       cwd,
-      tmuxTarget,
+      paneId,
     };
   }
 }

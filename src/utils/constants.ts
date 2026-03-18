@@ -1,3 +1,5 @@
+import { execSync } from "node:child_process";
+
 export const GitChangeStatus = {
   Modified: "modified",
   Added: "added",
@@ -24,6 +26,7 @@ export const CliCommand = {
   Help: "help",
   HelpFlag: "--help",
   HelpShort: "-h",
+  Bug: "bug",
 } as const;
 
 export type CliCommand = (typeof CliCommand)[keyof typeof CliCommand];
@@ -49,6 +52,7 @@ export const ApiRoute = {
 
 export const DEFAULT_HOOK_PORT = 9377;
 export const MINI_APP_BASE_URL = "https://kaida-palooza.github.io/ccpoke";
+export const CCPOKE_MARKER = "ccpoke";
 
 export const ChannelName = {
   Telegram: "telegram",
@@ -78,4 +82,39 @@ export function isMacOS(): boolean {
 
 export function isLinux(): boolean {
   return currentPlatform === Platform.Linux;
+}
+
+export function refreshWindowsPath(): void {
+  if (!isWindows()) return;
+  try {
+    const userPathRaw = execSync('reg query "HKCU\\Environment" /v Path', {
+      encoding: "utf-8",
+      stdio: "pipe",
+      timeout: 5000,
+    });
+    const userPath =
+      userPathRaw
+        .replace(/\r/g, "")
+        .match(/REG_(?:EXPAND_)?SZ\s+(.+)/)?.[1]
+        ?.trim() ?? "";
+
+    const machinePathRaw = execSync(
+      'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v Path',
+      { encoding: "utf-8", stdio: "pipe", timeout: 5000 }
+    );
+    const machinePath =
+      machinePathRaw
+        .replace(/\r/g, "")
+        .match(/REG_(?:EXPAND_)?SZ\s+(.+)/)?.[1]
+        ?.trim() ?? "";
+
+    const merged = `${userPath};${machinePath}`;
+    process.env.PATH = expandEnvVars(merged);
+  } catch {
+    /* best-effort */
+  }
+}
+
+function expandEnvVars(value: string): string {
+  return value.replace(/%([^%]+)%/g, (_, name: string) => process.env[name] ?? `%${name}%`);
 }

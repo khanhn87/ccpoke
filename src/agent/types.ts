@@ -17,6 +17,18 @@ export const AGENT_DISPLAY_NAMES: Record<AgentName, string> = {
   [AgentName.OpenCode]: "OpenCode",
 };
 
+export interface IntegrityResult {
+  complete: boolean;
+  missing: string[];
+}
+
+export interface AgentInstaller {
+  isInstalled(): boolean;
+  verifyIntegrity(): IntegrityResult;
+  install(): void;
+  uninstall(): void;
+}
+
 export interface AgentProvider {
   readonly name: AgentName;
   readonly displayName: string;
@@ -25,10 +37,10 @@ export interface AgentProvider {
 
   detect(): boolean;
   isHookInstalled(): boolean;
-  installHook(port: number, secret: string): void;
+  installHook(): void;
   uninstallHook(): void;
   parseEvent(raw: unknown): AgentEventResult;
-  verifyIntegrity(): { complete: boolean; missing: string[] };
+  verifyIntegrity(): IntegrityResult;
 }
 
 export interface AgentEventResult {
@@ -38,5 +50,5 @@ export interface AgentEventResult {
   model: string;
   agentSessionId?: string;
   cwd?: string;
-  tmuxTarget?: string;
+  paneId?: string;
 }

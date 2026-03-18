@@ -1,6 +1,6 @@
 import { EmbedBuilder } from "discord.js";
 
-import { formatModelName } from "../../utils/stats-format.js";
+import { buildSessionLabel, shortenModel } from "../session-label.js";
 import type { NotificationData } from "../types.js";
 
 const DISCORD_EMBED_COLOR = 0x00b894;
@@ -9,12 +9,12 @@ export function formatNotificationEmbed(
   data: NotificationData,
   responseUrl?: string
 ): EmbedBuilder {
-  const embed = new EmbedBuilder()
-    .setColor(DISCORD_EMBED_COLOR)
-    .setTitle(`📦 ${data.projectName}`)
-    .setTimestamp();
+  const label = buildSessionLabel(data.projectName, "", data.paneId ?? "");
+  const embed = new EmbedBuilder().setColor(DISCORD_EMBED_COLOR).setTitle(label).setTimestamp();
 
-  embed.setDescription(`🐾 ${data.agentDisplayName}`);
+  const short = shortenModel(data.model);
+  const desc = short ? `🐾 ${data.agentDisplayName}\n🧠 ${short}` : `🐾 ${data.agentDisplayName}`;
+  embed.setDescription(desc);
 
   if (data.responseSummary) {
     const snippet =
@@ -22,10 +22,6 @@ export function formatNotificationEmbed(
         ? data.responseSummary.slice(0, 497) + "..."
         : data.responseSummary;
     embed.addFields({ name: "", value: snippet });
-  }
-
-  if (data.model) {
-    embed.addFields({ name: "", value: `🤖 ${formatModelName(data.model)}`, inline: true });
   }
 
   if (responseUrl) {

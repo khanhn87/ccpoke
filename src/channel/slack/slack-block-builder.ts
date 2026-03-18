@@ -1,7 +1,7 @@
 import type { KnownBlock } from "@slack/web-api";
 
 import { extractProseSnippet } from "../../utils/markdown.js";
-import { formatModelName } from "../../utils/stats-format.js";
+import { buildSessionLabel, shortenModel } from "../session-label.js";
 import type { NotificationData } from "../types.js";
 
 const RESPONSE_TEXT_MAX = 2800;
@@ -11,15 +11,20 @@ export function buildNotificationBlocks(
   responseUrl?: string
 ): KnownBlock[] {
   const blocks: KnownBlock[] = [];
+  const label = buildSessionLabel(data.projectName, "", data.paneId ?? "");
 
   blocks.push({
     type: "header",
-    text: { type: "plain_text", text: data.projectName, emoji: true },
+    text: { type: "plain_text", text: label, emoji: true },
   });
 
+  const short = shortenModel(data.model);
   const fields: { type: "mrkdwn"; text: string }[] = [
     { type: "mrkdwn", text: `*Agent*\n${data.agentDisplayName}` },
   ];
+  if (short) {
+    fields.push({ type: "mrkdwn", text: `*Model*\n${short}` });
+  }
 
   blocks.push({ type: "section", fields });
 
@@ -31,16 +36,6 @@ export function buildNotificationBlocks(
     type: "section",
     text: { type: "mrkdwn", text: summaryText },
   });
-
-  const contextElements: { type: "mrkdwn"; text: string }[] = [];
-
-  if (data.model) {
-    contextElements.push({ type: "mrkdwn", text: formatModelName(data.model) });
-  }
-
-  if (contextElements.length > 0) {
-    blocks.push({ type: "context", elements: contextElements });
-  }
 
   if (responseUrl) {
     blocks.push({

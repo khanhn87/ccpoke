@@ -13,14 +13,30 @@ export function isInlineMessage(text: string): boolean {
 }
 
 export function markdownToTelegramV2(text: string): string {
-  const lines = text.split("\n");
-  const result: string[] = [];
+  const segments: string[] = [];
+  const codeBlockPattern = /```(\w*)\n?([\s\S]*?)```/g;
+  let lastIdx = 0;
+  let match;
 
-  for (const line of lines) {
-    result.push(convertInlineLine(line));
+  while ((match = codeBlockPattern.exec(text)) !== null) {
+    if (match.index > lastIdx) {
+      segments.push(formatInlineSection(text.slice(lastIdx, match.index)));
+    }
+    const lang = match[1] || "";
+    const code = match[2]!.replace(/[\\`]/g, (m) => `\\${m}`);
+    segments.push(`\`\`\`${lang}\n${code}\`\`\``);
+    lastIdx = match.index + match[0].length;
   }
 
-  return result.join("\n");
+  if (lastIdx < text.length) {
+    segments.push(formatInlineSection(text.slice(lastIdx)));
+  }
+
+  return segments.join("");
+}
+
+function formatInlineSection(text: string): string {
+  return text.split("\n").map(convertInlineLine).join("\n");
 }
 
 function convertInlineLine(line: string): string {
